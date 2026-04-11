@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Studio Cloud Pro (Sync Optimized)</title>
+    <title>Sweep Studio Cloud Pro (Fixed Upload)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -21,7 +21,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef, useCallback } = React;
+        const { useState, useEffect, useRef } = React;
 
         // !!! INSERT YOUR GOOGLE KEYS HERE !!!
         const CLIENT_ID = '825424908668-34msduf922vplmf8qggoobrfkljq0d09.apps.googleusercontent.com';
@@ -37,7 +37,7 @@
             const [reviewRows, setReviewRows] = useState([]);
             const [token, setToken] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
-            const [syncStatus, setSyncStatus] = useState('idle'); // 'idle', 'syncing', 'saved'
+            const [syncStatus, setSyncStatus] = useState('idle');
             const fileInputRef = useRef(null);
             const saveTimeoutRef = useRef(null);
 
@@ -59,14 +59,10 @@
                 client.requestAccessToken();
             };
 
-            // DEBOUNCED SAVE: This prevents the app from hanging when typing with 130+ images
             const debouncedSave = (currentDeck) => {
                 setSyncStatus('syncing');
                 if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-                
-                saveTimeoutRef.current = setTimeout(() => {
-                    saveToDrive(currentDeck);
-                }, 2000); // Wait 2 seconds after last change to upload
+                saveTimeoutRef.current = setTimeout(() => saveToDrive(currentDeck), 2000);
             };
 
             const saveToDrive = async (currentDeck) => {
@@ -90,10 +86,7 @@
                         });
                     }
                     setSyncStatus('saved');
-                } catch (e) { 
-                    console.error(e);
-                    setSyncStatus('error');
-                }
+                } catch (e) { setSyncStatus('error'); }
             };
 
             const loadFromDrive = async (accessToken) => {
@@ -106,11 +99,9 @@
                             headers: { Authorization: `Bearer ${accessToken}` }
                         });
                         const data = await res.json();
-                        if (data && Array.isArray(data)) {
-                            setDeck(data);
-                        }
+                        if (data && Array.isArray(data)) setDeck(data);
                     }
-                } catch (err) { console.error("Load failed", err); }
+                } catch (err) { console.error(err); }
                 setIsLoading(false);
             };
 
@@ -118,14 +109,22 @@
             const handleLiveEdit = (cardId, updates) => {
                 const updatedDeck = deck.map(c => c.id === cardId ? {...c, ...updates} : c);
                 setDeck(updatedDeck);
-
                 if (mode === 'review') {
-                    const updatedRows = reviewRows.map(row => 
-                        row.map(card => card && card.id === cardId ? {...card, ...updates} : card)
-                    );
+                    const updatedRows = reviewRows.map(row => row.map(card => card && card.id === cardId ? {...card, ...updates} : card));
                     setReviewRows(updatedRows);
                 }
                 debouncedSave(updatedDeck);
+            };
+
+            const handleSingleImageUpload = (cardId, e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                        handleLiveEdit(cardId, { image: ev.target.result });
+                    };
+                    reader.readAsDataURL(file);
+                }
             };
 
             const addCard = () => {
@@ -154,7 +153,7 @@
                         if (processed === files.length) {
                             const updated = [...deck, ...newCards];
                             setDeck(updated);
-                            saveToDrive(updated); // Immediate save for bulk
+                            saveToDrive(updated);
                             setIsLoading(false);
                         }
                     };
@@ -164,9 +163,7 @@
 
             const startReview = () => {
                 const rows = [];
-                for (let i = 0; i < deck.length; i += 3) {
-                    rows.push(deck.slice(i, i + 3));
-                }
+                for (let i = 0; i < deck.length; i += 3) rows.push(deck.slice(i, i + 3));
                 setReviewRows(rows);
                 setCurrentRow(0);
                 setMode('review');
@@ -193,39 +190,31 @@
                 setMode('edit');
             };
 
-            // Loading Screen
             if (isLoading) return (
                 <div className="h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
                     <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full loading-spin mb-4"></div>
-                    <p className="font-bold tracking-widest text-sm">FETCHING YOUR DECK FROM DRIVE...</p>
-                    <p className="text-slate-500 text-xs mt-2 italic">Large decks with photos may take a few seconds</p>
+                    <p className="font-bold tracking-widest text-sm uppercase">Loading Cloud Deck...</p>
                 </div>
             );
 
-            // Login Screen
             if (!token) return (
                 <div className="h-screen flex items-center justify-center bg-slate-950">
                     <div className="bg-white p-12 rounded-[3rem] shadow-2xl text-center max-w-sm">
                         <h1 className="text-4xl font-black text-indigo-600 mb-2 italic tracking-tighter">SWEEP_STUDIO</h1>
-                        <p className="text-slate-400 mb-8 font-medium leading-relaxed">Your data is stored in your private Google Drive for permanent access.</p>
-                        <button onClick={login} className="w-full bg-indigo-600 text-white px-8 py-4 rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100">
-                            Connect Google Drive
-                        </button>
+                        <p className="text-slate-400 mb-8 font-medium">Safe permanent storage in your Google Drive.</p>
+                        <button onClick={login} className="w-full bg-indigo-600 text-white px-8 py-4 rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100">Connect Drive</button>
                     </div>
                 </div>
             );
 
             return (
                 <div className="max-w-7xl mx-auto p-4 md:p-8">
-                    {/* Header */}
                     <nav className="flex flex-col md:flex-row justify-between items-center mb-10 bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 gap-4">
                         <div>
                             <h1 className="text-3xl font-black text-indigo-600 italic tracking-tighter">SWEEP_STUDIO</h1>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
                                 <span className={`w-2 h-2 rounded-full ${syncStatus === 'syncing' ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'}`}></span>
-                                <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em]">
-                                    {syncStatus === 'syncing' ? 'Syncing to Drive...' : `Cloud Saved: ${deck.length} Items`}
-                                </p>
+                                {syncStatus === 'syncing' ? 'Syncing...' : `Cloud Saved: ${deck.length} Items`}
                             </div>
                         </div>
                         <div className="flex gap-3">
@@ -236,7 +225,7 @@
                                     <input type="file" multiple hidden ref={fileInputRef} onChange={bulkUpload} accept="image/*" />
                                 </>
                             ) : (
-                                <button onClick={() => setMode('edit')} className="bg-rose-500 text-white px-8 py-3 rounded-xl font-bold text-sm">STOP REVIEW</button>
+                                <button onClick={() => setMode('edit')} className="bg-rose-500 text-white px-8 py-3 rounded-xl font-bold text-sm">EXIT</button>
                             )}
                         </div>
                     </nav>
@@ -244,17 +233,28 @@
                     {mode === 'edit' ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                             {deck.map(card => (
-                                <div key={card.id} className="bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col h-[520px] overflow-hidden group">
+                                <div key={card.id} className="bg-white rounded-[2rem] shadow-sm border border-slate-200 flex flex-col h-[520px] overflow-hidden group">
                                     <div className="p-5 flex-1 overflow-y-auto space-y-4">
                                         <input className="w-full font-black text-lg outline-none border-b-2 border-transparent focus:border-indigo-500 pb-1" placeholder="Title..." value={card.header} onChange={e => handleLiveEdit(card.id, {header: e.target.value})} />
-                                        <div className="bg-slate-900 rounded-2xl aspect-[4/3] flex items-center justify-center overflow-hidden shadow-inner">
-                                            {card.image ? <img src={card.image} className="w-full h-full object-contain" /> : <div className="text-slate-600 text-[10px] font-bold">NO IMAGE</div>}
-                                        </div>
-                                        <textarea className="w-full h-28 text-slate-500 text-sm outline-none resize-none bg-slate-50 p-4 rounded-xl focus:bg-white border-transparent border focus:border-slate-100" placeholder="Card notes..." value={card.description} onChange={e => handleLiveEdit(card.id, {description: e.target.value})} />
+                                        
+                                        {/* Individual Upload Area */}
+                                        <label className="bg-slate-900 rounded-2xl aspect-[4/3] flex flex-col items-center justify-center overflow-hidden shadow-inner cursor-pointer hover:bg-slate-800 transition-colors relative group">
+                                            {card.image ? (
+                                                <img src={card.image} className="w-full h-full object-contain" />
+                                            ) : (
+                                                <div className="flex flex-col items-center gap-2">
+                                                    <span className="text-white font-black text-[10px] uppercase tracking-widest bg-indigo-600 px-4 py-2 rounded-lg">📷 Upload Image</span>
+                                                    <span className="text-slate-600 text-[9px] font-bold uppercase text-center px-4 leading-tight italic">Click here to add a photo to this card</span>
+                                                </div>
+                                            )}
+                                            <input type="file" hidden accept="image/*" onChange={(e) => handleSingleImageUpload(card.id, e)} />
+                                        </label>
+
+                                        <textarea className="w-full h-28 text-slate-500 text-sm outline-none resize-none bg-slate-50 p-4 rounded-xl focus:bg-white border-transparent border focus:border-slate-100 font-medium" placeholder="Card notes/description..." value={card.description} onChange={e => handleLiveEdit(card.id, {description: e.target.value})} />
                                     </div>
-                                    <div className="px-5 py-3 bg-slate-50 border-t flex justify-between items-center">
-                                        <span className="text-[10px] font-bold text-slate-300">ID: {card.id.toString().slice(-4)}</span>
-                                        <button onClick={() => {if(confirm('Delete?')){const d=deck.filter(c=>c.id!==card.id); setDeck(d); saveToDrive(d);}}} className="text-slate-300 hover:text-rose-500">
+                                    <div className="px-5 py-3 bg-slate-50 border-t flex justify-between items-center text-slate-300">
+                                        <span className="text-[10px] font-black tracking-widest uppercase opacity-40">Item: {card.id.toString().slice(-4)}</span>
+                                        <button onClick={() => {if(confirm('Delete card?')){const d=deck.filter(c=>c.id!==card.id); setDeck(d); saveToDrive(d);}}} className="hover:text-rose-500 transition-colors">
                                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
                                         </button>
                                     </div>
@@ -266,10 +266,10 @@
                             </button>
                         </div>
                     ) : (
-                        <div className="max-w-6xl mx-auto space-y-10">
+                        <div className="max-w-6xl mx-auto space-y-10 animate-in fade-in duration-500 pb-32">
                             <div className="bg-white p-6 rounded-[2rem] flex justify-between items-center shadow-sm border border-slate-200">
-                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Active Sweep Session</p>
-                                <div className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black text-sm">SET {currentRow + 1} / {reviewRows.length}</div>
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">ACTIVE SESSION</p>
+                                <div className="bg-indigo-600 text-white px-10 py-3 rounded-2xl font-black text-sm uppercase tracking-widest">SET {currentRow + 1} / {reviewRows.length}</div>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -277,33 +277,24 @@
                                     const card = reviewRows[currentRow]?.[colIdx];
                                     return (
                                         <div key={colIdx} className="flex flex-col gap-6">
-                                            <div className="text-center font-black text-indigo-300 text-[10px] tracking-[0.5em] uppercase">COLUMN {String.fromCharCode(65+colIdx)}</div>
+                                            <div className="text-center font-black text-indigo-300 text-[10px] tracking-[0.5em] uppercase">COL {String.fromCharCode(65+colIdx)}</div>
                                             <div className={`flex-1 rounded-[3rem] border-4 min-h-[550px] p-8 transition-all duration-500 ${card ? 'bg-white shadow-2xl border-white' : 'bg-slate-200/40 border-dashed border-slate-200 flex items-center justify-center text-slate-300 italic text-xs'}`}>
                                                 {card ? (
                                                     <div className="h-full flex flex-col">
-                                                        <input 
-                                                            className="w-full text-xl font-black mb-6 text-slate-800 outline-none bg-transparent"
-                                                            value={card.header}
-                                                            onChange={(e) => handleLiveEdit(card.id, {header: e.target.value})}
-                                                        />
+                                                        <input className="w-full text-xl font-black mb-6 text-slate-800 outline-none bg-transparent" value={card.header} onChange={(e) => handleLiveEdit(card.id, {header: e.target.value})} />
                                                         {card.image && (
                                                             <div className="bg-slate-900 rounded-[2rem] overflow-hidden mb-6 aspect-video flex items-center justify-center shadow-inner">
                                                                 <img src={card.image} className="w-full h-full object-contain" />
                                                             </div>
                                                         )}
-                                                        <textarea 
-                                                            className="flex-1 w-full text-slate-500 text-sm leading-relaxed outline-none bg-transparent resize-none font-medium"
-                                                            placeholder="Click to add notes during review..."
-                                                            value={card.description}
-                                                            onChange={(e) => handleLiveEdit(card.id, {description: e.target.value})}
-                                                        />
+                                                        <textarea className="flex-1 w-full text-slate-500 text-sm leading-relaxed outline-none bg-transparent resize-none font-medium" placeholder="..." value={card.description} onChange={(e) => handleLiveEdit(card.id, {description: e.target.value})} />
                                                     </div>
-                                                ) : "Empty"}
+                                                ) : "EMPTY"}
                                             </div>
                                             {card && (
                                                 <div className="flex justify-center gap-3">
-                                                    <button disabled={colIdx === 0} onClick={() => swap(currentRow, colIdx, colIdx - 1)} className="bg-white px-6 py-3 rounded-2xl shadow-lg disabled:opacity-10 text-[10px] font-black">← SWAP</button>
-                                                    <button disabled={colIdx === 2 || !reviewRows[currentRow][colIdx + 1]} onClick={() => swap(currentRow, colIdx, colIdx + 1)} className="bg-white px-6 py-3 rounded-2xl shadow-lg disabled:opacity-10 text-[10px] font-black">SWAP →</button>
+                                                    <button disabled={colIdx === 0} onClick={() => swap(currentRow, colIdx, colIdx - 1)} className="bg-white px-6 py-3 rounded-2xl shadow-lg disabled:opacity-10 text-[10px] font-black active:scale-95 transition-all">← SWAP</button>
+                                                    <button disabled={colIdx === 2 || !reviewRows[currentRow][colIdx + 1]} onClick={() => swap(currentRow, colIdx, colIdx + 1)} className="bg-white px-6 py-3 rounded-2xl shadow-lg disabled:opacity-10 text-[10px] font-black active:scale-95 transition-all">SWAP →</button>
                                                 </div>
                                             )}
                                         </div>
@@ -311,11 +302,11 @@
                                 })}
                             </div>
 
-                            <div className="flex justify-center pt-8 pb-32">
+                            <div className="flex justify-center pt-8">
                                 {currentRow < reviewRows.length - 1 ? (
-                                    <button onClick={() => setCurrentRow(currentRow + 1)} className="bg-indigo-600 text-white px-24 py-6 rounded-[2.5rem] font-black text-lg shadow-2xl shadow-indigo-200 active:scale-95 transition-all uppercase tracking-widest">Next Set</button>
+                                    <button onClick={() => setCurrentRow(currentRow + 1)} className="bg-indigo-600 text-white px-24 py-6 rounded-[2.5rem] font-black text-lg shadow-2xl shadow-indigo-200 active:scale-95 transition-all uppercase tracking-[0.2em]">Next Set</button>
                                 ) : (
-                                    <button onClick={completeSweep} className="bg-emerald-600 text-white px-24 py-6 rounded-[2.5rem] font-black text-lg shadow-2xl shadow-emerald-200 active:scale-95 transition-all uppercase tracking-widest">Reshuffle & Sweep</button>
+                                    <button onClick={completeSweep} className="bg-emerald-600 text-white px-24 py-6 rounded-[2.5rem] font-black text-lg shadow-2xl shadow-emerald-200 active:scale-95 transition-all uppercase tracking-[0.2em]">Sweep & Shuffle</button>
                                 )}
                             </div>
                         </div>
