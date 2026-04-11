@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sweep Cards Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js"></script>
+</head>
+<body class="bg-slate-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // !!! INSERT YOUR KEYS HERE !!!
+        const CLIENT_ID = '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';
+        const API_KEY = 'AIzaSyCpRGr-L5zFJDksK6yT2KHxIlRgm6Daaz0';
+        
+        const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
+        const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+
+        const App = () => {
+            const [deck, setDeck] = useState([]);
+            const [mode, setMode] = useState('edit');
+            const [currentRow, setCurrentRow] = useState(0);
+            const [reviewRows, setReviewRows] = useState([]);
+            const [token, setToken] = useState(null);
+            const [syncing, setSyncing] = useState(false);
+            const fileInputRef = useRef(null);
+
+            // Init Google API
+            useEffect(() => {
+                gapi.load('client', () => {
+                    gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
+                });
+            }, []);
+
+            const login = () => {
+                const client = google.accounts.oauth2.initTokenClient({
+                    client_id: CLIENT_ID,
+                    scope: SCOPES,
+                    callback: (res) => {
+                        setToken(res.access_token);
+                        loadFromDrive(res.access_token);
+                    },
+                });
+                client.requestAccessToken();
+            };
+
+            const saveToDrive = async (currentDeck) => {
+                if (!token) return;
+                setSyncing(true);
+                const list = await gapi.client.drive.files.list({ q: "name = 'flashcards_v1.json'" });
+                const fileId = list.result.files[0]?.id;
+                const blob = new Blob([JSON.stringify(currentDeck)], { type: 'application/json' });
+
+                if (fileId) {
+                    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+                        method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
+                    });
+                } else {
+                    const metadata = { name: 'flashcards_v1.json', mimeType: 'application/json' };
+                    const form = new FormData();
+                    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                    form.append('file', blob);
+                    await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                        method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form
+                    });
+                }
+                setSyncing(false);
+            };
+
+            const loadFromDrive = async (accessToken) => {
+                const list = await gapi.client.drive.files.list({ q: "name = 'flashcards_v1.json'" });
+                const fileId = list.result.files[0]?.id;
+                if (fileId) {
+                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+                        headers: { Authorization: `Bearer ${accessToken}` }
+                    });
+                    const data = await res.json();
+                    setDeck(data);
+                }
+            };
+
+            const bulkUpload = (e) => {
+                const files = Array.from(e.target.files);
+                files.forEach((file) => {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                        setDeck(prev => {
+                            const updated = [...prev, {
+                                id: Math.random(),
+                                header: file.name.split('.')[0],
+                                description: '',
+                                image: ev.target.result,
+                                showFields: { header: true, desc: true, img: true }
+                            }];
+                            saveToDrive(updated);
+                            return updated;
+                        });
+                    };
+                    reader.readAsDataURL(file);
+                });
+            };
+
+            const startSweep = () => {
+                const rows = [];
+                for (let i = 0; i < deck.length; i += 3) rows.push(deck.slice(i, i + 3));
+                setReviewRows(rows);
+                setCurrentRow(0);
+                setMode('review');
+            };
+
+            const swap = (rowIdx, a, b) => {
+                const newRows = [...reviewRows];
+                const row = [...newRows[rowIdx]];
+                [row[a], row[b]] = [row[b], row[a]];
+                newRows[rowIdx] = row;
+                setReviewRows(newRows);
+            };
+
+            const finishSweep = () => {
+                const a = [], b = [], c = [];
+                reviewRows.forEach(r => { if(r[0]) a.push(r[0]); if(r[1]) b.push(r[1]); if(r[2]) c.push(r[2]); });
+                const final = [...a, ...b, ...c];
+                setDeck(final);
+                saveToDrive(final);
+                setMode('edit');
+            };
+
+            if (!token) return (
+                <div className="flex h-screen items-center justify-center">
+                    <button onClick={login} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-bold shadow-xl">Connect Google Drive to Start</button>
+                </div>
+            );
+
+            return (
+                <div className="p-6 max-w-6xl mx-auto">
+                    <div className="flex justify-between items-center bg-white p-6 rounded-3xl shadow-sm border mb-8">
+                        <h1 className="text-2xl font-black text-indigo-600 italic">SWEEP_CLOUD</h1>
+                        <div className="flex gap-4 items-center">
+                            {syncing && <span className="text-xs text-indigo-400 animate-pulse">Saving...</span>}
+                            {mode === 'edit' ? (
+                                <>
+                                    <button onClick={() => fileInputRef.current.click()} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold">Bulk Upload</button>
+                                    <button onClick={startSweep} className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold">Start Sweep</button>
+                                    <input type="file" multiple hidden ref={fileInputRef} onChange={bulkUpload} />
+                                </>
+                            ) : (
+                                <button onClick={() => setMode('edit')} className="text-rose-500 font-bold">Exit</button>
+                            )}
+                        </div>
+                    </div>
+
+                    {mode === 'edit' ? (
+                        <div className="grid grid-cols-3 gap-6">
+                            {deck.map(card => (
+                                <div key={card.id} className="bg-white p-4 rounded-2xl border h-[400px] flex flex-col">
+                                    <input className="font-bold border-b mb-2 outline-none" value={card.header} onChange={e => {
+                                        const d = deck.map(c => c.id === card.id ? {...c, header: e.target.value} : c);
+                                        setDeck(d); saveToDrive(d);
+                                    }} />
+                                    <div className="flex-1 bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center">
+                                        {card.image && <img src={card.image} className="w-full h-full object-contain" />}
+                                    </div>
+                                    <button onClick={() => {
+                                        const d = deck.filter(c => c.id !== card.id);
+                                        setDeck(d); saveToDrive(d);
+                                    }} className="text-red-400 text-xs mt-2 self-end uppercase font-bold">Delete</button>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="space-y-10">
+                            <div className="grid grid-cols-3 gap-8">
+                                {[0,1,2].map(i => {
+                                    const card = reviewRows[currentRow]?.[i];
+                                    return (
+                                        <div key={i} className="flex flex-col gap-4">
+                                            <div className="h-[450px] bg-white rounded-3xl p-6 shadow-xl border-4 border-white flex flex-col">
+                                                {card ? <>
+                                                    <h2 className="text-xl font-bold mb-4">{card.header}</h2>
+                                                    <div className="flex-1 bg-black rounded-xl overflow-hidden mb-4 flex items-center justify-center">
+                                                        <img src={card.image} className="w-full h-full object-contain" />
+                                                    </div>
+                                                </> : <div className="m-auto text-slate-300">Empty</div>}
+                                            </div>
+                                            {card && <div className="flex justify-center gap-2">
+                                                <button disabled={i===0} onClick={()=>swap(currentRow, i, i-1)} className="bg-white p-2 rounded shadow disabled:opacity-20 text-xs font-bold">← SWAP</button>
+                                                <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=>swap(currentRow, i, i+1)} className="bg-white p-2 rounded shadow disabled:opacity-20 text-xs font-bold">SWAP →</button>
+                                            </div>}
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                            <div className="text-center">
+                                {currentRow < reviewRows.length -1 ? 
+                                    <button onClick={()=>setCurrentRow(currentRow+1)} className="bg-indigo-600 text-white px-12 py-4 rounded-2xl font-bold">Next Set</button> :
+                                    <button onClick={finishSweep} className="bg-emerald-600 text-white px-12 py-4 rounded-2xl font-bold">Finish & Reshuffle</button>
+                                }
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
