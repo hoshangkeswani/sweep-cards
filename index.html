@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro: Recovery Edition</title>
+    <title>Sweep Sync Pro: Ultra Stable</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -13,8 +13,10 @@
     <style>
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .loading-spin { animation: spin 1s linear infinite; border-top-color: #4f46e5; }
+        .loading-spin { animation: spin 1s linear infinite; border-top-color: #4f46e5; border-width: 4px; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .zoom-overlay { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     </style>
 </head>
 <body class="bg-slate-50 min-h-screen font-sans text-slate-900">
@@ -23,7 +25,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // !!! RE-PASTE YOUR KEYS HERE !!!
+        // !!! RE-PASTE YOUR REAL KEYS HERE !!!
         const CLIENT_ID = '825424908668-34msduf922vplmf8qggoobrfkljq0d09.apps.googleusercontent.com';
         const API_KEY = 'AIzaSyCpRGr-L5zFJDksK6yT2KHxIlRgm6Daaz0';
         
@@ -35,144 +37,143 @@
             const [stacks, setStacks] = useState([]); 
             const [masterLibrary, setMasterLibrary] = useState({}); 
             const [activeStack, setActiveStack] = useState(null); 
-            
             const [token, setToken] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
             const [syncStatus, setSyncStatus] = useState('idle');
             const [showBorrowModal, setShowBorrowModal] = useState(false);
-            const [showNotes, setShowNotes] = useState(false); 
             const [zoomUrl, setZoomUrl] = useState(null);
-            
             const [currentRow, setCurrentRow] = useState(0);
             const [reviewRows, setReviewRows] = useState([]);
-
+            
+            const fileInputRef = useRef(null);
             const saveTimeoutRef = useRef(null);
-            const stackSaveTimeoutRef = useRef(null);
 
+            // Initialize Google API
             useEffect(() => {
-                gapi.load('client', async () => {
-                    await gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
-                });
+                const initGapi = async () => {
+                    try {
+                        await gapi.load('client', async () => {
+                            await gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
+                        });
+                    } catch (e) { console.error("GAPI Init Error", e); }
+                };
+                initGapi();
             }, []);
-
-            // Helper to safely get names
-            const getSafeName = (fileName) => {
-                if (!fileName) return "Untitled";
-                return fileName.replace('sweep_stack_', '').replace('.json', '');
-            };
 
             const login = () => {
                 const client = google.accounts.oauth2.initTokenClient({
                     client_id: CLIENT_ID, scope: SCOPES,
                     callback: (res) => {
+                        if (res.error) return;
                         setToken(res.access_token);
-                        bootSystem(res.access_token);
+                        bootApp(res.access_token);
                     },
                 });
                 client.requestAccessToken();
             };
 
-            const bootSystem = async (accessToken) => {
+            const bootApp = async (accessToken) => {
                 setIsLoading(true);
                 try {
-                    // Load Library
+                    // Load Master Library
                     const mList = await gapi.client.drive.files.list({ q: "name = 'sweep_master_library.json'" });
                     if (mList.result.files?.[0]) {
                         const res = await fetch(`https://www.googleapis.com/drive/v3/files/${mList.result.files[0].id}?alt=media`, {
                             headers: { Authorization: `Bearer ${accessToken}` }
                         });
-                        setMasterLibrary(await res.json());
-                    }
-                    // Load Collections
-                    const sList = await gapi.client.drive.files.list({ 
-                        q: "mimeType = 'application/json' and name contains 'sweep_stack_'",
-                        fields: "files(id, name)"
-                    });
-                    const files = sList.result.files || [];
-                    const withCounts = await Promise.all(files.map(async (file) => {
-                        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
-                            headers: { Authorization: `Bearer ${accessToken}` }
-                        });
                         const data = await res.json();
-                        const count = Array.isArray(data) ? data.length : (data?.cardIds ? data.cardIds.length : 0);
-                        return { ...file, count };
-                    }));
-                    setStacks(withCounts);
-                } catch (e) { console.error("Boot error", e); }
+                        setMasterLibrary(data || {});
+                    }
+                    // Load Stack List
+                    await refreshStacks(accessToken);
+                } catch (e) { console.error("Boot Error", e); }
                 setIsLoading(false);
             };
 
-            const saveStackToCloud = async (stackId, stackObj) => {
-                setSyncStatus('syncing');
-                const blob = new Blob([JSON.stringify(stackObj)], { type: 'application/json' });
-                await fetch(`https://www.googleapis.com/upload/drive/v3/files/${stackId}?uploadType=media`, {
-                    method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
+            const refreshStacks = async (accessToken) => {
+                const sList = await gapi.client.drive.files.list({ 
+                    q: "mimeType = 'application/json' and name contains 'sweep_stack_'",
+                    fields: "files(id, name)"
                 });
-                setSyncStatus('saved');
+                const files = sList.result.files || [];
+                const withCounts = await Promise.all(files.map(async (f) => {
+                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`, {
+                        headers: { Authorization: `Bearer ${accessToken}` }
+                    });
+                    const ids = await res.json();
+                    return { ...f, count: Array.isArray(ids) ? ids.length : 0 };
+                }));
+                setStacks(withCounts);
             };
 
-            const saveMasterToCloud = async (libObj) => {
-                const list = await gapi.client.drive.files.list({ q: "name = 'sweep_master_library.json'" });
-                const id = list.result.files[0]?.id;
-                const blob = new Blob([JSON.stringify(libObj)], { type: 'application/json' });
-                if (id) {
-                    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+            const saveMaster = async (nl) => {
+                const mList = await gapi.client.drive.files.list({ q: "name = 'sweep_master_library.json'" });
+                const mid = mList.result.files?.[0]?.id;
+                const blob = new Blob([JSON.stringify(nl)], { type: 'application/json' });
+                if (mid) {
+                    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${mid}?uploadType=media`, {
                         method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
+                    });
+                } else {
+                    const meta = { name: 'sweep_master_library.json', mimeType: 'application/json' };
+                    const form = new FormData();
+                    form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+                    form.append('file', blob);
+                    await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                        method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form
                     });
                 }
             };
 
-            const openStack = async (stackFile) => {
+            const saveStackData = async (sid, ids) => {
+                setSyncStatus('syncing');
+                const blob = new Blob([JSON.stringify(ids)], { type: 'application/json' });
+                const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${sid}?uploadType=media`, {
+                    method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
+                });
+                setSyncStatus('saved');
+                return res.ok;
+            };
+
+            const openStack = async (stack) => {
                 setIsLoading(true);
                 try {
-                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${stackFile.id}?alt=media`, {
+                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${stack.id}?alt=media`, {
                         headers: { Authorization: `Bearer ${token}` }
                     });
-                    const data = await res.json();
-                    // CRITICAL FIX: Ensure valid object structure
-                    const cardIds = Array.isArray(data) ? data : (data?.cardIds || []);
-                    const notes = data?.notes || "";
-                    setActiveStack({ ...stackFile, cardIds, notes });
+                    const ids = await res.json();
+                    setActiveStack({ ...stack, cardIds: Array.isArray(ids) ? ids : [] });
                     setView('edit');
-                } catch (e) { console.error("Open error", e); }
+                } catch (e) { console.error(e); }
                 setIsLoading(false);
             };
 
-            const borrowCard = (id) => {
-                if (!activeStack || activeStack.cardIds.includes(id)) return;
-                const newIds = [...activeStack.cardIds, id];
-                const updated = { ...activeStack, cardIds: newIds };
-                setActiveStack(updated);
-                saveStackToCloud(activeStack.id, { cardIds: newIds, notes: activeStack.notes });
-            };
-
-            const removeCard = (id) => {
-                const newIds = activeStack.cardIds.filter(cid => cid !== id);
-                const updated = { ...activeStack, cardIds: newIds };
-                setActiveStack(updated);
-                saveStackToCloud(activeStack.id, { cardIds: newIds, notes: activeStack.notes });
-            };
-
-            const updateCardData = (id, updates) => {
-                const newLib = { ...masterLibrary, [id]: { ...masterLibrary[id], ...updates } };
-                setMasterLibrary(newLib);
+            const handleUpdateCard = (cid, updates) => {
+                const nl = { ...masterLibrary, [cid]: { ...masterLibrary[cid], ...updates } };
+                setMasterLibrary(nl);
                 if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-                saveTimeoutRef.current = setTimeout(() => saveMasterToCloud(newLib), 2000);
+                saveTimeoutRef.current = setTimeout(() => saveMaster(nl), 2000);
             };
 
-            const handleStackNotes = (val) => {
-                const updated = { ...activeStack, notes: val };
-                setActiveStack(updated);
-                if (stackSaveTimeoutRef.current) clearTimeout(stackSaveTimeoutRef.current);
-                stackSaveTimeoutRef.current = setTimeout(() => saveStackToCloud(activeStack.id, { cardIds: updated.cardIds, notes: updated.notes }), 2000);
+            const addNewCard = () => {
+                const id = "c_" + Date.now() + Math.random().toString(36).substr(2, 4);
+                const nl = { ...masterLibrary, [id]: { id, header: '', description: '', image: null } };
+                const ni = [...activeStack.cardIds, id];
+                setMasterLibrary(nl);
+                setActiveStack({...activeStack, cardIds: ni});
+                saveMaster(nl);
+                saveStackData(activeStack.id, ni);
             };
 
             const startReview = () => {
                 const rs = [];
                 for (let i = 0; i < activeStack.cardIds.length; i += 3) rs.push(activeStack.cardIds.slice(i, i + 3));
-                setReviewRows(rs);
-                setCurrentRow(0);
-                setView('review');
+                setReviewRows(rs); setCurrentRow(0); setView('review');
+            };
+
+            const swap = (ri, a, b) => {
+                const nr = [...reviewRows]; const r = [...nr[ri]];
+                [r[a], r[b]] = [r[b], r[a]]; nr[ri] = r; setReviewRows(nr);
             };
 
             const completeSweep = async () => {
@@ -180,170 +181,194 @@
                 const a=[], b=[], c=[];
                 reviewRows.forEach(r => { if(r[0]) a.push(r[0]); if(r[1]) b.push(r[1]); if(r[2]) c.push(r[2]); });
                 const ni = [...a, ...b, ...c];
-                await saveStackToCloud(activeStack.id, { cardIds: ni, notes: activeStack.notes });
+                await saveStackData(activeStack.id, ni);
                 setActiveStack({...activeStack, cardIds: ni});
                 setView('edit');
             };
 
+            // HELPERS
+            const getDisplayName = (name) => name.replace('sweep_stack_', '').replace('.json', '');
+
             if (!token) return (
-                <div className="h-screen flex items-center justify-center bg-slate-900 text-center p-6">
-                    <div className="bg-white p-16 rounded-[3rem] shadow-2xl max-w-md w-full">
-                        <h1 className="text-5xl font-black text-indigo-600 mb-8 italic tracking-tighter">SWEEP_SYNC</h1>
-                        <button onClick={login} className="w-full bg-indigo-600 text-white px-8 py-5 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-sm">Connect Drive</button>
+                <div className="h-screen flex items-center justify-center bg-slate-900 text-center">
+                    <div className="bg-white p-16 rounded-[3rem] shadow-2xl max-w-sm mx-4">
+                        <h1 className="text-4xl font-black text-indigo-600 mb-2 italic italic tracking-tighter">SWEEP_PRO</h1>
+                        <p className="text-slate-400 mb-8 font-medium">Cloud Studio v3.0</p>
+                        <button onClick={login} className="w-full bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">LOGIN WITH DRIVE</button>
                     </div>
                 </div>
             );
 
             if (isLoading) return (
-                <div className="h-screen flex flex-col items-center justify-center bg-slate-50 text-slate-400">
-                    <div className="w-12 h-12 border-4 border-slate-200 rounded-full loading-spin mb-4"></div>
-                    <p className="font-black text-[10px] uppercase tracking-[0.3em]">Opening Collection...</p>
+                <div className="h-screen flex flex-col items-center justify-center bg-white">
+                    <div className="w-12 h-12 border-slate-200 rounded-full loading-spin mb-4 border-4"></div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cloud Syncing...</p>
                 </div>
             );
 
             return (
-                <div className="max-w-7xl mx-auto p-4 md:p-10">
+                <div className="max-w-7xl mx-auto p-4 md:p-8 pb-32">
+                    
+                    {/* ZOOM OVERLAY */}
                     {zoomUrl && (
-                        <div className="fixed inset-0 z-[999] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out lightbox-anim" onClick={() => setZoomUrl(null)}>
-                            <img src={zoomUrl} className="max-w-full max-h-full object-contain shadow-2xl" />
+                        <div className="fixed inset-0 z-[999] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out zoom-overlay" onClick={() => setZoomUrl(null)}>
+                            <img src={zoomUrl} className="max-w-full max-h-full object-contain" />
+                            <div className="absolute top-6 right-6 text-white/50 font-bold uppercase text-xs">Click anywhere to close</div>
                         </div>
                     )}
 
-                    <nav className="flex justify-between items-center mb-10 bg-white p-6 rounded-[2rem] shadow-sm border relative z-10">
-                        <div className="flex items-center gap-6">
-                            {view !== 'library' && <button onClick={() => setView('library')} className="bg-slate-50 px-4 py-2 rounded-xl font-bold text-slate-400 hover:text-indigo-600 text-xs uppercase transition-all">← Library</button>}
+                    {/* TOP NAV */}
+                    <nav className="flex justify-between items-center mb-8 bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                        <div className="flex items-center gap-4">
+                            {view !== 'library' && (
+                                <button onClick={() => setView('library')} className="w-10 h-10 flex items-center justify-center bg-slate-50 rounded-xl font-bold hover:bg-slate-100 transition-all">←</button>
+                            )}
                             <div>
-                                <h1 className="text-xl font-black text-indigo-600 uppercase italic tracking-tighter leading-none">{view === 'library' ? 'Library' : getSafeName(activeStack?.name)}</h1>
-                                <span className={`text-[9px] font-black uppercase tracking-widest mt-1 block ${syncStatus === 'syncing' ? 'text-amber-500 animate-pulse' : 'text-slate-300'}`}>Cloud {syncStatus === 'syncing' ? 'Saving...' : 'Synced'}</span>
+                                <h1 className="text-xl font-black text-indigo-600 uppercase italic leading-none">
+                                    {view === 'library' ? 'Stacks Library' : getDisplayName(activeStack.name)}
+                                </h1>
+                                <p className="text-[9px] font-black text-slate-300 uppercase tracking-widest mt-1">
+                                    {syncStatus === 'syncing' ? 'Cloud Saving...' : 'All changes saved'}
+                                </p>
                             </div>
                         </div>
                         <div className="flex gap-2">
                             {view === 'library' ? (
-                                <button onClick={() => { const n = prompt("Name:"); if(n) createStack(n); }} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black text-xs uppercase shadow-lg shadow-indigo-100">+ New</button>
+                                <button onClick={() => {
+                                    const n = prompt("Name:"); if(n) { setIsLoading(true); createStack(n).then(() => setIsLoading(false)); }
+                                }} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-xs">+ NEW</button>
                             ) : view === 'edit' ? (
                                 <>
-                                    <button onClick={() => setShowBorrowModal(true)} className="bg-emerald-500 text-white px-5 py-3 rounded-xl font-black text-xs uppercase">Borrow</button>
-                                    <button onClick={startReview} className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-black text-xs uppercase shadow-lg shadow-indigo-100">Review</button>
+                                    <button onClick={() => setShowBorrowModal(true)} className="bg-emerald-500 text-white px-4 py-3 rounded-xl font-bold text-xs uppercase">Borrow</button>
+                                    <button onClick={() => fileInputRef.current.click()} className="bg-slate-800 text-white px-4 py-3 rounded-xl font-bold text-xs uppercase">Bulk</button>
+                                    <button onClick={startReview} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-xs uppercase shadow-lg shadow-indigo-100">Start Review</button>
+                                    <input type="file" multiple hidden ref={fileInputRef} onChange={(e) => bulkUpload(e)} />
                                 </>
-                            ) : (
-                                <button onClick={() => setShowNotes(!showNotes)} className={`px-6 py-3 rounded-xl font-black text-xs uppercase transition-all ${showNotes ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'bg-slate-100 text-slate-500'}`}>Notepad</button>
-                            )}
+                            ) : null}
                         </div>
                     </nav>
 
+                    {/* LIBRARY VIEW */}
                     {view === 'library' && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                             {stacks.map(s => (
-                                <div key={s.id} onClick={() => openStack(s)} className="bg-white p-10 rounded-[3rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all shadow-sm hover:shadow-2xl relative group">
-                                    <div className="w-12 h-12 bg-indigo-50 rounded-xl mb-6 group-hover:bg-indigo-600 transition-colors flex items-center justify-center text-indigo-600 group-hover:text-white font-black text-xl italic shadow-inner">S</div>
-                                    <h3 className="font-black text-slate-800 text-lg uppercase leading-none">{getSafeName(s.name)}</h3>
-                                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mt-2">{s.count} Cards</p>
-                                    <button onClick={(e) => { e.stopPropagation(); deleteStack(s.id, e); }} className="absolute top-10 right-10 text-slate-100 hover:text-rose-500 font-black transition-colors text-xl">×</button>
+                                <div key={s.id} onClick={() => openStack(s)} className="bg-white p-8 rounded-[3rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all shadow-sm relative group">
+                                    <div className="w-12 h-12 bg-indigo-50 rounded-2xl mb-4 flex items-center justify-center text-indigo-600 font-black italic">S</div>
+                                    <h3 className="font-black text-slate-700 text-lg uppercase leading-tight mb-1">{getDisplayName(s.name)}</h3>
+                                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{s.count} Synced Items</p>
+                                    <button onClick={(e) => { e.stopPropagation(); deleteStack(s.id, e); }} className="absolute top-6 right-6 text-slate-200 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity">×</button>
                                 </div>
                             ))}
                         </div>
                     )}
 
+                    {/* EDIT VIEW */}
                     {view === 'edit' && activeStack && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 pb-20">
-                            {activeStack.cardIds?.map(cid => {
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                            {activeStack.cardIds.map(cid => {
                                 const card = masterLibrary[cid];
                                 if(!card) return null;
                                 return (
-                                    <div key={cid} className="bg-white rounded-[2.5rem] border h-[520px] flex flex-col overflow-hidden shadow-sm hover:border-indigo-200 transition-all">
-                                        <div className="p-6 flex flex-col h-full gap-4">
-                                            <input className="w-full font-black text-lg outline-none bg-transparent border-b border-transparent focus:border-indigo-200 pb-1" placeholder="Untitled" value={card.header} onChange={e => updateCardData(cid, {header: e.target.value})} />
-                                            <div className="bg-slate-900 rounded-[1.5rem] aspect-[4/3] flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
-                                                {card.image ? <img src={card.image} loading="lazy" className="w-full h-full object-contain" /> : <span className="text-white/20 font-black text-[9px] uppercase tracking-widest">No Image</span>}
-                                            </div>
-                                            <textarea className="flex-grow w-full text-slate-500 text-sm outline-none resize-none bg-slate-50 p-5 rounded-2xl border-transparent focus:bg-white border focus:border-slate-100 font-medium leading-relaxed" placeholder="Notes..." value={card.description} onChange={e => updateCardData(cid, {description: e.target.value})} />
-                                            <div className="flex justify-end pt-2">
-                                                <button onClick={() => removeCard(cid)} className="bg-slate-50 px-4 py-2 rounded-xl text-[9px] font-black text-slate-300 hover:text-rose-500 hover:bg-rose-50 uppercase tracking-widest transition-all">Remove</button>
-                                            </div>
+                                    <div key={cid} className="bg-white rounded-3xl border h-[480px] flex flex-col overflow-hidden shadow-sm hover:border-indigo-200 transition-all">
+                                        <div className="p-5 flex-1 overflow-y-auto space-y-4">
+                                            <input className="w-full font-bold outline-none border-b border-transparent focus:border-indigo-200 pb-1" value={card.header} placeholder="Card Title..." onChange={e => handleUpdateCard(cid, {header: e.target.value})} />
+                                            <label className="bg-slate-900 rounded-2xl aspect-video flex items-center justify-center overflow-hidden cursor-pointer hover:bg-slate-800 transition-all">
+                                                {card.image ? <img src={card.image} className="w-full h-full object-contain opacity-80" loading="lazy" /> : <span className="text-[9px] font-black text-white/30 tracking-widest">ADD IMAGE</span>}
+                                                <input type="file" hidden accept="image/*" onChange={(e) => {
+                                                    const f = e.target.files[0];
+                                                    const r = new FileReader();
+                                                    r.onload = (ev) => handleUpdateCard(cid, {image: ev.target.result});
+                                                    r.readAsDataURL(f);
+                                                }} />
+                                            </label>
+                                            <textarea className="w-full h-24 text-xs outline-none bg-slate-50 p-4 rounded-xl font-medium leading-relaxed border border-transparent focus:bg-white focus:border-slate-100" placeholder="Card notes..." value={card.description} onChange={e => handleUpdateCard(cid, {description: e.target.value})} />
+                                        </div>
+                                        <div className="px-5 py-3 bg-slate-50 border-t flex justify-end items-center gap-4">
+                                            <span className="text-[8px] font-black text-slate-200 tracking-tighter uppercase">ID: {cid.slice(-4)}</span>
+                                            <button onClick={() => {
+                                                const ni = activeStack.cardIds.filter(x => x !== cid);
+                                                setActiveStack({...activeStack, cardIds: ni}); saveStackData(activeStack.id, ni);
+                                            }} className="text-[9px] font-black text-rose-300 hover:text-rose-500 uppercase transition-colors">Delete</button>
                                         </div>
                                     </div>
                                 )
                             })}
-                            <button onClick={addNewCard} className="border-4 border-dashed border-slate-200 rounded-[3rem] h-[520px] text-slate-200 text-6xl hover:text-indigo-400 bg-white/40 transition-all">+</button>
+                            <button onClick={addNewCard} className="border-4 border-dashed border-slate-200 rounded-3xl h-[480px] text-slate-200 text-6xl hover:text-indigo-300 hover:bg-white/40 transition-all">+</button>
                         </div>
                     )}
 
+                    {/* REVIEW VIEW */}
                     {view === 'review' && (
-                        <div className="flex gap-8 relative pb-56">
-                            <div className={`flex-grow transition-all duration-500 ${showNotes ? 'w-2/3' : 'w-full'}`}>
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    {[0, 1, 2].map(i => {
-                                        const cid = reviewRows[currentRow]?.[i];
-                                        const card = masterLibrary[cid];
-                                        return (
-                                            <div key={i} className="flex flex-col gap-4">
-                                                <div className="text-center font-bold text-indigo-200 text-[10px] tracking-widest uppercase italic">Pos {String.fromCharCode(65+i)}</div>
-                                                <div className={`rounded-[3.5rem] border-4 p-8 h-[550px] transition-all flex flex-col ${card ? 'bg-white shadow-xl border-white hover:border-indigo-100' : 'bg-slate-100 border-dashed border-slate-200 flex items-center justify-center'}`}>
-                                                    {card ? (
-                                                        <div className="h-full flex flex-col overflow-hidden">
-                                                            <input className="w-full text-2xl font-black mb-4 outline-none bg-transparent" value={card.header} onChange={e => updateCardData(cid, {header: e.target.value})} />
-                                                            {card.image && (
-                                                                <div className="bg-black rounded-3xl overflow-hidden mb-4 aspect-video flex items-center justify-center cursor-zoom-in group shrink-0" onClick={() => setZoomUrl(card.image)}>
-                                                                    <img src={card.image} className="w-full h-full object-contain" />
+                        <div className="animate-in fade-in duration-500">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl mx-auto mb-10">
+                                {[0, 1, 2].map(i => {
+                                    const cid = reviewRows[currentRow]?.[i];
+                                    const card = masterLibrary[cid];
+                                    return (
+                                        <div key={i} className="flex flex-col gap-4">
+                                            <div className="text-center font-black text-indigo-200 text-[10px] tracking-widest uppercase">POS {String.fromCharCode(65+i)}</div>
+                                            <div className={`rounded-[2.5rem] border-4 p-8 h-[480px] transition-all flex flex-col ${card ? 'bg-white shadow-xl border-white hover:border-indigo-50' : 'bg-slate-100 border-dashed border-slate-200'}`}>
+                                                {card ? (
+                                                    <div className="h-full flex flex-col overflow-hidden">
+                                                        <input className="w-full text-xl font-black mb-4 outline-none bg-transparent" value={card.header} onChange={e => handleUpdateCard(cid, {header: e.target.value})} />
+                                                        {card.image && (
+                                                            <div className="bg-black rounded-3xl overflow-hidden mb-4 aspect-video flex items-center justify-center cursor-zoom-in group shrink-0 relative" onClick={() => setZoomUrl(card.image)}>
+                                                                <img src={card.image} className="w-full h-full object-contain transition-transform group-hover:scale-105" />
+                                                                <div className="absolute inset-0 bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                                    <span className="text-[8px] font-black text-white uppercase tracking-tighter">Click to Zoom</span>
                                                                 </div>
-                                                            )}
-                                                            <textarea className="flex-1 w-full text-slate-500 text-base outline-none resize-none font-medium leading-relaxed bg-transparent" value={card.description} onChange={e => updateCardData(cid, {description: e.target.value})} />
-                                                        </div>
-                                                    ) : <span className="text-slate-300 uppercase font-black text-xs">Empty</span>}
-                                                </div>
-                                                {card && (
-                                                    <div className="flex justify-center gap-2">
-                                                        <button disabled={i===0} onClick={()=>swap(currentRow, i, i-1)} className="bg-white px-6 py-3 rounded-2xl shadow font-bold text-[10px] disabled:opacity-20 active:scale-90 transition-all border uppercase tracking-widest">← Swap</button>
-                                                        <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=>swap(currentRow, i, i+1)} className="bg-white px-6 py-3 rounded-2xl shadow font-bold text-[10px] disabled:opacity-20 active:scale-90 transition-all border uppercase tracking-widest">Swap →</button>
+                                                            </div>
+                                                        )}
+                                                        <textarea className="flex-1 w-full text-slate-500 text-sm outline-none resize-none bg-transparent font-medium leading-relaxed" placeholder="Notes..." value={card.description} onChange={e => handleUpdateCard(cid, {description: e.target.value})} />
                                                     </div>
-                                                )}
+                                                ) : <span className="m-auto text-[10px] font-black text-slate-200 uppercase tracking-widest">Empty Slot</span>}
                                             </div>
-                                        )
-                                    })}
-                                </div>
+                                            {card && (
+                                                <div className="flex justify-center gap-2">
+                                                    <button disabled={i===0} onClick={()=>swap(currentRow, i, i-1)} className="bg-white px-6 py-2 rounded-xl shadow-sm font-black text-[9px] disabled:opacity-20 active:scale-90 transition-all border border-slate-100 uppercase">← Swap</button>
+                                                    <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=>swap(currentRow, i, i+1)} className="bg-white px-6 py-2 rounded-xl shadow-sm font-black text-[9px] disabled:opacity-20 active:scale-90 transition-all border border-slate-100 uppercase">Swap →</button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )
+                                })}
                             </div>
-                            {showNotes && (
-                                <div className="w-1/3 min-w-[340px] h-[640px] bg-white border-4 border-indigo-100 rounded-[3.5rem] shadow-2xl flex flex-col overflow-hidden sticky top-8 animate-in slide-in-from-right duration-300">
-                                    <div className="bg-indigo-50 p-8 border-b border-indigo-100">
-                                        <h2 className="font-black text-indigo-600 uppercase italic tracking-tighter">Study Notes</h2>
-                                    </div>
-                                    <textarea className="flex-1 p-8 text-slate-600 text-base outline-none resize-none font-medium leading-relaxed bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:24px_24px]" placeholder="Stack notes..." value={activeStack.notes || ""} onChange={(e) => handleStackNotes(e.target.value)} />
-                                </div>
-                            )}
 
-                            <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t p-8 flex flex-col items-center gap-4 z-50">
-                                <div className="bg-indigo-600 text-white px-8 py-2 rounded-full font-black text-[10px] uppercase tracking-widest">Set {currentRow + 1} / {reviewRows.length}</div>
-                                <div className="flex gap-4">
-                                    <button onClick={() => setView('edit')} className="bg-slate-100 px-12 py-5 rounded-[2rem] font-black text-xs text-slate-400 uppercase tracking-widest">Exit</button>
-                                    {currentRow < reviewRows.length - 1 ? 
-                                        <button onClick={()=>setCurrentRow(currentRow+1)} className="bg-indigo-600 text-white px-24 py-6 rounded-[2rem] font-black text-lg shadow-xl uppercase tracking-widest">Next Set</button> :
-                                        <button onClick={completeSweep} className="bg-emerald-600 text-white px-24 py-6 rounded-[2rem] font-black text-lg shadow-xl uppercase tracking-widest italic">Save & Sweep</button>
-                                    }
+                            {/* STICKY CONTROL BAR */}
+                            <div className="fixed bottom-0 left-0 right-0 bg-slate-50/90 backdrop-blur-lg border-t border-slate-200 p-6 flex flex-col items-center gap-4 z-50">
+                                <div className="bg-indigo-600 text-white px-6 py-2 rounded-full font-black text-[10px] uppercase tracking-[0.2em] shadow-lg shadow-indigo-100">
+                                    Set {currentRow + 1} / {reviewRows.length}
                                 </div>
+                                {currentRow < reviewRows.length - 1 ? 
+                                    <button onClick={()=>setCurrentRow(currentRow+1)} className="bg-indigo-600 text-white px-24 py-5 rounded-[2rem] font-black text-lg shadow-xl hover:scale-105 active:scale-95 transition-all uppercase tracking-widest">Next Set</button> :
+                                    <button onClick={completeSweep} className="bg-emerald-600 text-white px-24 py-5 rounded-[2rem] font-black text-lg shadow-xl hover:scale-105 active:scale-95 transition-all uppercase tracking-widest italic tracking-tighter font-serif">Sweep & Save Order</button>
+                                }
                             </div>
                         </div>
                     )}
 
+                    {/* BORROW MODAL */}
                     {showBorrowModal && (
-                        <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-xl flex items-center justify-center p-6 z-[100] animate-in fade-in duration-300">
-                            <div className="bg-white w-full max-w-6xl max-h-[85vh] rounded-[4rem] overflow-hidden flex flex-col p-16 shadow-2xl">
+                        <div className="fixed inset-0 bg-slate-900/95 flex items-center justify-center p-6 z-[100] animate-in fade-in duration-300">
+                            <div className="bg-white w-full max-w-5xl max-h-[85vh] rounded-[4rem] overflow-hidden flex flex-col p-12 shadow-2xl">
                                 <div className="flex justify-between items-center mb-10">
-                                    <h2 className="text-3xl font-black text-indigo-600 italic tracking-tighter uppercase leading-none tracking-tighter uppercase leading-none">Borrow Cards</h2>
-                                    <button onClick={() => setShowBorrowModal(false)} className="bg-slate-100 p-8 rounded-full text-slate-300 font-black text-2xl hover:text-rose-500 transition-colors">×</button>
+                                    <h2 className="text-2xl font-black text-indigo-600 italic uppercase">Global Sync Library</h2>
+                                    <button onClick={() => setShowBorrowModal(false)} className="text-4xl text-slate-300 hover:text-rose-500">×</button>
                                 </div>
-                                <div className="flex-1 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 pr-4">
+                                <div className="flex-1 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 pr-4">
                                     {Object.values(masterLibrary).map(card => (
-                                        <div key={card.id} className="bg-slate-50 border p-6 rounded-[3rem] flex flex-col gap-4 shadow-sm group">
-                                            <h4 className="font-bold text-slate-800 text-xs truncate uppercase tracking-tighter">{card.header || "Untitled"}</h4>
-                                            <div className="bg-slate-200 aspect-video rounded-3xl overflow-hidden shadow-inner flex items-center justify-center">
-                                                {card.image && <img src={card.image} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500" />}
-                                            </div>
+                                        <div key={card.id} className="bg-slate-50 border p-5 rounded-3xl flex flex-col gap-3 shadow-sm group">
+                                            <h4 className="font-bold text-slate-800 text-xs truncate uppercase tracking-tighter leading-none">{card.header || "Untitled"}</h4>
+                                            <div className="bg-slate-200 aspect-video rounded-2xl overflow-hidden shadow-inner">{card.image && <img src={card.image} className="w-full h-full object-cover grayscale opacity-50" />}</div>
                                             <button 
                                                 disabled={activeStack.cardIds.includes(card.id)} 
-                                                onClick={() => borrowCard(card.id)} 
-                                                className={`w-full py-5 rounded-2xl font-black text-[10px] tracking-widest transition-all uppercase ${activeStack.cardIds.includes(card.id) ? 'bg-slate-100 text-slate-300' : 'bg-indigo-600 text-white shadow-xl hover:scale-105 active:scale-95'}`}
+                                                onClick={() => { 
+                                                    const ni = [...activeStack.cardIds, card.id]; 
+                                                    setActiveStack({...activeStack, cardIds: ni}); saveStackData(activeStack.id, ni); 
+                                                }} 
+                                                className={`w-full py-3 rounded-xl font-bold text-[9px] tracking-widest transition-all ${activeStack.cardIds.includes(card.id) ? 'bg-slate-100 text-slate-300' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-50'}`}
                                             >
-                                                {activeStack.cardIds.includes(card.id) ? 'In Stack' : 'Borrow'}
+                                                {activeStack.cardIds.includes(card.id) ? 'IN STACK' : 'ADD'}
                                             </button>
                                         </div>
                                     ))}
