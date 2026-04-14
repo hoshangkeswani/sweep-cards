@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Pro: Ultimate Recovery</title>
+    <title>Sweep Pro: Data Recovery Fix</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -13,13 +13,14 @@
     <style>
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .loading-spin { animation: spin 1s linear infinite; border: 3px solid #f3f3f3; border-top: 3px solid #4f46e5; border-radius: 50%; width: 24px; height: 24px; }
+        .loading-spin { animation: spin 1s linear infinite; border: 3px solid #f3f3f3; border-top: 3px solid #4f46e5; border-radius: 50%; width: 30px; height: 30px; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .modal-enter { animation: modalEnter 0.25s ease-out; }
         @keyframes modalEnter { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+        .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen font-sans text-slate-900">
+<body class="bg-slate-50 min-h-screen font-sans text-slate-900 overflow-x-hidden">
     <div id="root"></div>
 
     <script type="text/babel">
@@ -48,22 +49,19 @@
             const [zoomUrl, setZoomUrl] = useState(null); 
             const [currentRow, setCurrentRow] = useState(0);
             const [reviewRows, setReviewRows] = useState([]);
-            const [geminiKey, setGeminiKey] = useState('AIzaSyAV394dghHsGOxq1thv9EcXJzVoyvb04jE');
+            const [geminiKey, setGeminiKey] = useState(localStorage.getItem('gemini_api_key') || '');
             const [aiLoadingId, setAiLoadingId] = useState(null);
 
             const fileInputRef = useRef(null);
             const saveTimeoutRef = useRef(null);
 
-            // 1. GAPI Initialization with Error Catching
+            // 1. Initialize GAPI
             useEffect(() => {
                 const initGapi = async () => {
                     try {
                         await new Promise((resolve) => gapi.load('client', resolve));
                         await gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
-                        console.log("GAPI Ready");
-                    } catch (e) {
-                        alert("Google Drive Tools failed to load. Check your API Key.");
-                    }
+                    } catch (e) { console.error("GAPI Load Fail"); }
                 };
                 initGapi();
             }, []);
@@ -75,8 +73,6 @@
                         if (res.access_token) {
                             setToken(res.access_token);
                             bootSystem(res.access_token);
-                        } else {
-                            alert("Login failed. Please allow pop-ups.");
                         }
                     },
                 });
@@ -86,10 +82,7 @@
             const bootSystem = async (at) => {
                 setIsLoading(true);
                 try {
-                    // Load Master Library
-                    const mList = await gapi.client.drive.files.list({ 
-                        q: "name = 'sweep_master_library.json' and trashed = false" 
-                    });
+                    const mList = await gapi.client.drive.files.list({ q: "name = 'sweep_master_library.json' and trashed = false" });
                     if (mList.result.files?.[0]) {
                         const res = await fetch(`https://www.googleapis.com/drive/v3/files/${mList.result.files[0].id}?alt=media`, {
                             headers: { Authorization: `Bearer ${at}` }
@@ -97,98 +90,23 @@
                         const data = await res.json();
                         setMasterLibrary(data || {});
                     }
-                    // Load Stacks
                     await refreshStacks(at);
-                } catch (e) {
-                    console.error("Boot error", e);
-                }
+                } catch (e) { console.error("Boot Fail", e); }
                 setIsLoading(false);
             };
 
             const refreshStacks = async (at) => {
-                try {
-                    // Broad query: ignore mimeType to ensure older stacks are found
-                    const sList = await gapi.client.drive.files.list({ 
-                        q: "name contains 'sweep_stack_' and trashed = false",
-                        fields: "files(id, name)"
-                    });
-                    const files = sList.result.files || [];
-                    const withCounts = await Promise.all(files.map(async (f) => {
-                        try {
-                            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`, {
-                                headers: { Authorization: `Bearer ${at}` }
-                            });
-                            const data = await res.json();
-                            const count = Array.isArray(data) ? data.length : (data.cardIds ? data.cardIds.length : 0);
-                            return { ...f, count };
-                        } catch (err) { return { ...f, count: 0 }; }
-                    }));
-                    setStacks(withCounts);
-                } catch (e) {
-                    console.error("Refresh error", e);
-                }
-            };
-
-            const createStack = async () => {
-                const n = prompt("Enter Collection Name:");
-                if (!n) return;
-                
-                setIsLoading(true);
-                try {
-                    const metadata = { name: `sweep_stack_${n}.json`, mimeType: 'application/json' };
-                    const blob = new Blob([JSON.stringify({ cardIds: [], notes: "" })], { type: 'application/json' });
-                    const form = new FormData();
-                    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-                    form.append('file', blob);
-                    
-                    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-                        method: 'POST',
-                        headers: { Authorization: `Bearer ${token}` },
-                        body: form
-                    });
-                    
-                    if (!response.ok) throw new Error("Server rejected file creation");
-                    
-                    await refreshStacks(token);
-                } catch (e) {
-                    alert("Sync Error: Could not create stack. " + e.message);
-                }
-                setIsLoading(false);
-            };
-
-            const saveMaster = async (nl) => {
-                setSyncStatus('syncing');
-                try {
-                    const list = await gapi.client.drive.files.list({ q: "name = 'sweep_master_library.json' and trashed = false" });
-                    const id = list.result.files[0]?.id;
-                    const blob = new Blob([JSON.stringify(nl)], { type: 'application/json' });
-                    
-                    if (id) {
-                        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
-                            method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
-                        });
-                    } else {
-                        const meta = { name: 'sweep_master_library.json', mimeType: 'application/json' };
-                        const form = new FormData();
-                        form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
-                        form.append('file', blob);
-                        await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-                            method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form
-                        });
-                    }
-                    setSyncStatus('saved');
-                } catch (e) { setSyncStatus('error'); }
-            };
-
-            const saveStackFile = async (sid, ids, notes) => {
-                setSyncStatus('syncing');
-                try {
-                    const blob = new Blob([JSON.stringify({ cardIds: ids, notes: notes || "" })], { type: 'application/json' });
-                    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${sid}?uploadType=media`, {
-                        method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
-                    });
-                    setSyncStatus('saved');
-                } catch (e) { setSyncStatus('error'); }
+                const sList = await gapi.client.drive.files.list({ q: "name contains 'sweep_stack_' and trashed = false", fields: "files(id, name)" });
+                const files = sList.result.files || [];
+                const withCounts = await Promise.all(files.map(async (f) => {
+                    try {
+                        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`, { headers: { Authorization: `Bearer ${at}` } });
+                        const data = await res.json();
+                        const count = Array.isArray(data) ? data.length : (data.cardIds?.length || 0);
+                        return { ...f, count };
+                    } catch(e) { return { ...f, count: 0 }; }
+                }));
+                setStacks(withCounts);
             };
 
             const openStack = async (stack) => {
@@ -198,11 +116,40 @@
                         headers: { Authorization: `Bearer ${token}` }
                     });
                     const data = await res.json();
-                    const ids = Array.isArray(data) ? data : (data.cardIds || []);
-                    setActiveStack({ ...stack, cardIds: ids, notes: data.notes || "" });
+                    
+                    // UNIVERSAL FORMAT HANDLER: Detects if old array or new object
+                    const safeIds = Array.isArray(data) ? data : (data && data.cardIds ? data.cardIds : []);
+                    const safeNotes = data && data.notes ? data.notes : "";
+                    
+                    setActiveStack({ ...stack, cardIds: safeIds, notes: safeNotes });
                     setView('edit');
-                } catch (e) { alert("Could not open stack."); }
+                } catch (e) { alert("Error opening stack file."); }
                 setIsLoading(false);
+            };
+
+            const saveMaster = async (nl) => {
+                setSyncStatus('syncing');
+                const list = await gapi.client.drive.files.list({ q: "name = 'sweep_master_library.json' and trashed = false" });
+                const id = list.result.files[0]?.id;
+                const blob = new Blob([JSON.stringify(nl)], { type: 'application/json' });
+                if (id) { await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob }); }
+                else {
+                    const meta = { name: 'sweep_master_library.json', mimeType: 'application/json' };
+                    const form = new FormData();
+                    form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+                    form.append('file', blob);
+                    await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+                }
+                setSyncStatus('saved');
+            };
+
+            const saveStackFile = async (sid, ids, notes) => {
+                setSyncStatus('syncing');
+                const blob = new Blob([JSON.stringify({ cardIds: ids, notes: notes || "" })], { type: 'application/json' });
+                await fetch(`https://www.googleapis.com/upload/drive/v3/files/${sid}?uploadType=media`, {
+                    method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob
+                });
+                setSyncStatus('saved');
             };
 
             const updateCard = (cid, updates) => {
@@ -220,122 +167,131 @@
             };
 
             const filteredLibrary = useMemo(() => {
-                return Object.values(masterLibrary).filter(c => 
-                    c.header.toLowerCase().includes(borrowSearch.toLowerCase())
-                );
+                return Object.values(masterLibrary).filter(c => c.header.toLowerCase().includes(borrowSearch.toLowerCase()));
             }, [masterLibrary, borrowSearch]);
 
             if (!token) return (
                 <div className="h-screen flex items-center justify-center bg-slate-900 p-6">
-                    <div className="bg-white p-12 md:p-20 rounded-[4rem] shadow-2xl max-w-sm w-full text-center modal-enter">
-                        <div className="w-20 h-20 bg-indigo-600 rounded-3xl mx-auto mb-8 flex items-center justify-center text-white text-4xl font-black italic shadow-xl">S</div>
-                        <h1 className="text-4xl font-black text-slate-800 mb-2 tracking-tighter uppercase">Sweep Pro</h1>
-                        <p className="text-slate-400 mb-10 font-medium">Synced Global Cloud Studio</p>
+                    <div className="bg-white p-12 md:p-20 rounded-[4rem] shadow-2xl max-w-sm w-full text-center">
+                        <h1 className="text-4xl font-black text-indigo-600 mb-2 italic">SWEEP_PRO</h1>
+                        <p className="text-slate-400 mb-10">Synced Global Cloud Studio</p>
                         <button onClick={handleLogin} className="w-full bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">CONNECT DRIVE</button>
                     </div>
                 </div>
             );
 
             if (isLoading) return (
-                <div className="h-screen flex flex-col items-center justify-center bg-white">
-                    <div className="loading-spin mb-4"></div>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Accessing Data...</p>
-                </div>
+                <div className="h-screen flex flex-col items-center justify-center bg-white"><div className="loading-spin mb-4"></div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Processing Data...</p></div>
             );
 
             return (
                 <div className="max-w-7xl mx-auto p-4 md:p-8">
                     
-                    {zoomUrl && <div className="fixed inset-0 z-[6000] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setZoomUrl(null)}><img src={zoomUrl} className="max-w-full max-h-full object-contain modal-enter shadow-2xl" /></div>}
+                    {zoomUrl && <div className="fixed inset-0 z-[6000] bg-black/95 flex items-center justify-center p-4 cursor-pointer" onClick={() => setZoomUrl(null)}><img src={zoomUrl} className="max-w-full max-h-full object-contain shadow-2xl" /></div>}
 
-                    {/* CENTRAL FOCUS MODAL */}
+                    {/* FOCUS EDITOR */}
                     {focusedCardId && masterLibrary[focusedCardId] && (
                         <div className="fixed inset-0 z-[4000] bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-10">
                             <div className="bg-white w-full max-w-5xl h-[90vh] rounded-[3.5rem] shadow-2xl flex flex-col overflow-hidden modal-enter">
-                                <div className="p-6 border-b flex justify-between items-center bg-slate-50 shrink-0">
-                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Global Editor</span>
+                                <div className="p-6 border-b flex justify-between items-center shrink-0">
+                                    <span className="text-[10px] font-black text-slate-400 uppercase">Editor</span>
                                     <button onClick={() => setFocusedCardId(null)} className="text-slate-400 hover:text-rose-500 font-black text-3xl">×</button>
                                 </div>
                                 <div className="flex-1 flex flex-col p-6 md:p-10 space-y-6 overflow-hidden">
-                                    <input className="w-full text-4xl font-black outline-none border-b-4 border-slate-100 focus:border-indigo-500 pb-2 shrink-0 transition-colors" value={masterLibrary[focusedCardId].header} placeholder="Title" onChange={e => updateCard(focusedCardId, {header: e.target.value})} />
+                                    <input className="w-full text-4xl font-black outline-none border-b-4 border-slate-100 focus:border-indigo-500 pb-2" value={masterLibrary[focusedCardId].header} placeholder="Title" onChange={e => updateCard(focusedCardId, {header: e.target.value})} />
                                     <div className="flex flex-col md:flex-row gap-10 flex-1 overflow-hidden">
-                                        <div className="w-full md:w-2/5 flex flex-col gap-4 shrink-0">
+                                        <div className="w-full md:w-2/5 shrink-0">
                                             <div className="bg-slate-900 rounded-[2.5rem] aspect-square overflow-hidden shadow-2xl flex items-center justify-center relative group">
-                                                {masterLibrary[focusedCardId].image ? <img src={masterLibrary[focusedCardId].image} className="w-full h-full object-contain" /> : <span className="text-white/10 font-black uppercase text-xs">No Photo</span>}
-                                                <label className="absolute inset-0 bg-indigo-600/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer text-white font-black text-[10px] uppercase tracking-widest">Update Image<input type="file" hidden accept="image/*" onChange={e => { const r = new FileReader(); r.onload = ev => updateCard(focusedCardId, {image: ev.target.result}); r.readAsDataURL(e.target.files[0]); }} /></label>
+                                                {masterLibrary[focusedCardId].image ? <img src={masterLibrary[focusedCardId].image} className="w-full h-full object-contain" /> : <span className="text-white/10 font-black">NO IMAGE</span>}
+                                                <label className="absolute inset-0 bg-indigo-600/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer text-white font-black text-[10px] uppercase">Change Image<input type="file" hidden accept="image/*" onChange={e => { const r = new FileReader(); r.onload = ev => updateCard(focusedCardId, {image: ev.target.result}); r.readAsDataURL(e.target.files[0]); }} /></label>
                                             </div>
                                         </div>
-                                        <div className="flex-1 flex flex-col min-h-0 bg-slate-50 rounded-[2.5rem] p-1">
-                                            <textarea className="flex-1 w-full bg-transparent p-8 text-lg font-medium outline-none resize-none leading-relaxed overflow-y-auto" placeholder="Notes..." value={masterLibrary[focusedCardId].description} onChange={e => updateCard(focusedCardId, {description: e.target.value})} />
-                                        </div>
+                                        <textarea className="flex-1 bg-slate-50 p-8 rounded-[2.5rem] text-lg font-medium outline-none resize-none overflow-y-auto leading-relaxed" placeholder="Notes..." value={masterLibrary[focusedCardId].description} onChange={e => updateCard(focusedCardId, {description: e.target.value})} />
                                     </div>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    {/* NAV */}
+                    {/* TOP NAV */}
                     <nav className="flex justify-between items-center mb-10 bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200">
                         <div className="flex items-center gap-4">
                             {view !== 'library' && <button onClick={() => setView('library')} className="w-10 h-10 flex items-center justify-center bg-slate-50 rounded-full font-bold hover:bg-slate-100 transition-all">←</button>}
                             <div>
-                                <h1 className="text-xl font-black text-indigo-600 uppercase italic truncate leading-none">{view === 'library' ? 'Library' : activeStack.name.replace('sweep_stack_', '').replace('.json', '')}</h1>
+                                <h1 className="text-xl font-black text-indigo-600 uppercase italic truncate max-w-[200px] leading-none">{view === 'library' ? 'Stacks' : activeStack.name.replace('sweep_stack_', '').replace('.json', '')}</h1>
                                 <div className="flex items-center gap-2 mt-2">
-                                    <div className={`w-2 h-2 rounded-full ${syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : syncStatus === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`}></div>
-                                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none">{syncStatus === 'syncing' ? 'Syncing...' : 'Drive Active'}</span>
+                                    <div className={`w-2 h-2 rounded-full ${syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'}`}></div>
+                                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none">Sync Active</span>
                                 </div>
                             </div>
                         </div>
                         <div className="flex gap-2">
                             {view === 'library' ? (
-                                <button onClick={createStack} className="bg-indigo-600 text-white px-8 py-3 rounded-full font-black text-xs uppercase shadow-lg hover:scale-105 transition-transform">+ NEW STACK</button>
+                                <button onClick={() => {
+                                    const n = prompt("Stack Name:"); if(n) { 
+                                        setIsLoading(true);
+                                        const m = { name: `sweep_stack_${n}.json`, mimeType: 'application/json' };
+                                        const b = new Blob([JSON.stringify({ cardIds: [], notes: "" })], { type: 'application/json' });
+                                        const f = new FormData();
+                                        f.append('metadata', new Blob([JSON.stringify(m)], { type: 'application/json' }));
+                                        f.append('file', b);
+                                        fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: f }).then(() => bootSystem(token));
+                                    }
+                                }} className="bg-indigo-600 text-white px-8 py-3 rounded-full font-black text-xs uppercase shadow-lg">+ NEW</button>
                             ) : (
-                                <button onClick={() => { const rs = []; for (let i = 0; i < activeStack.cardIds.length; i += 3) rs.push(activeStack.cardIds.slice(i, i + 3)); setReviewRows(rs); setCurrentRow(0); setView('review'); setFocusedCardId(null); window.scrollTo(0,0); }} className="bg-indigo-600 text-white px-8 py-3 rounded-full font-black text-xs uppercase shadow-lg shadow-indigo-100">Review</button>
+                                <button onClick={() => { const rs = []; for (let i = 0; i < activeStack.cardIds.length; i += 3) rs.push(activeStack.cardIds.slice(i, i + 3)); setReviewRows(rs); setCurrentRow(0); setView('review'); setFocusedCardId(null); window.scrollTo(0,0); }} className="bg-indigo-600 text-white px-8 py-3 rounded-full font-black text-xs uppercase shadow-lg">Review</button>
                             )}
                         </div>
                     </nav>
 
-                    {/* VIEW: LIBRARY */}
+                    {/* LIBRARY GRID */}
                     {view === 'library' && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                             {stacks.map(s => (
                                 <div key={s.id} onClick={() => openStack(s)} className="bg-white p-10 rounded-[3rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all shadow-sm group relative">
                                     <div className="w-14 h-14 bg-indigo-50 rounded-[1.5rem] mb-4 flex items-center justify-center text-indigo-600 font-black italic shadow-inner group-hover:bg-indigo-600 group-hover:text-white transition-colors">S</div>
-                                    <h3 className="font-black text-slate-700 text-xl uppercase truncate mb-2">{s.name.replace('sweep_stack_', '').replace('.json', '')}</h3>
-                                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{s.count} Synced Items</p>
-                                    <button onClick={(e) => { e.stopPropagation(); deleteStack(s.id, e); }} className="absolute top-8 right-8 text-slate-200 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity font-black text-xl">×</button>
+                                    <h3 className="font-black text-slate-700 text-xl uppercase truncate leading-none mb-2">{s.name.replace('sweep_stack_', '').replace('.json', '')}</h3>
+                                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{s.count} Items</p>
+                                    <button onClick={(e) => { e.stopPropagation(); if(confirm('Delete entire collection?')) { setIsLoading(true); gapi.client.drive.files.delete({ fileId: s.id }).then(() => bootSystem(token)); } }} className="absolute top-8 right-8 text-slate-200 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity font-black text-xl">×</button>
                                 </div>
                             ))}
                         </div>
                     )}
 
-                    {/* VIEW: EDIT GRID */}
+                    {/* EDIT GRID WITH CARD GUARDS */}
                     {view === 'edit' && activeStack && (
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6 pb-40">
                             {activeStack.cardIds.map(cid => {
                                 const card = masterLibrary[cid];
                                 return (
-                                    <div key={cid} onClick={() => setFocusedCardId(cid)} className={`bg-white rounded-3xl border-2 cursor-pointer transition-all p-4 shadow-sm flex flex-col h-[280px] group ${focusedCardId === cid ? 'border-indigo-500 shadow-xl' : 'border-transparent hover:border-indigo-100'}`}>
+                                    <div key={cid} onClick={() => card && setFocusedCardId(cid)} className={`bg-white rounded-3xl border-2 cursor-pointer transition-all p-4 shadow-sm flex flex-col h-[280px] group ${focusedCardId === cid ? 'border-indigo-500' : 'border-transparent hover:border-indigo-100'}`}>
                                         {card ? (
                                             <>
                                                 <div className="aspect-video bg-slate-900 rounded-2xl overflow-hidden mb-3 shadow-inner">
                                                     {card.image && <img src={card.image} className="w-full h-full object-contain opacity-80" loading="lazy" />}
                                                 </div>
-                                                <h4 className="font-black text-[11px] uppercase truncate mb-1 text-slate-800 leading-none">{card.header || "No Title"}</h4>
+                                                <h4 className="font-black text-[11px] uppercase truncate mb-1 text-slate-800">{card.header || "No Title"}</h4>
                                                 <p className="text-[9px] text-slate-400 font-medium line-clamp-2 leading-tight overflow-hidden">{card.description || "..."}</p>
                                                 <div className="mt-auto pt-3 flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={(e) => {e.stopPropagation(); removeCard(cid);}} className="text-[9px] font-black text-rose-300 hover:text-rose-500 uppercase tracking-tighter">Remove</button>
+                                                    <button onClick={(e) => {e.stopPropagation(); removeCard(cid);}} className="text-[9px] font-black text-rose-300 hover:text-rose-500 uppercase">Remove</button>
                                                 </div>
                                             </>
-                                        ) : <div className="m-auto text-rose-300 font-black text-[9px] italic">Missing Data</div>}
+                                        ) : <div className="m-auto text-slate-300 text-[10px] font-black italic">Syncing Data...</div>}
                                     </div>
                                 )
                             })}
-                            <button onClick={addNewCard} className="border-4 border-dashed border-slate-200 rounded-3xl h-[280px] text-slate-200 text-6xl hover:text-indigo-400 hover:bg-white/50 transition-all shadow-sm">+</button>
+                            <button onClick={() => { 
+                                const id = "c_" + Date.now(); 
+                                const nl = { ...masterLibrary, [id]: { id, header: '', description: '', image: null } }; 
+                                const ni = [...activeStack.cardIds, id]; 
+                                setMasterLibrary(nl); setActiveStack({...activeStack, cardIds: ni}); 
+                                saveMaster(nl); saveStackFile(activeStack.id, ni, activeStack.notes); 
+                                setFocusedCardId(id); 
+                            }} className="border-4 border-dashed border-slate-200 rounded-3xl h-[280px] text-slate-200 text-6xl hover:text-indigo-400 hover:bg-white/50 transition-all shadow-sm">+</button>
                         </div>
                     )}
 
-                    {/* VIEW: REVIEW (Compact Logic) */}
+                    {/* REVIEW MODE */}
                     {view === 'review' && (
                         <div className="animate-in fade-in duration-500 pb-32">
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-7xl mx-auto">
@@ -343,8 +299,8 @@
                                     const cid = reviewRows[currentRow]?.[i]; const card = masterLibrary[cid];
                                     return (
                                         <div key={i} className="flex flex-col gap-3">
-                                            <div className="text-center font-black text-indigo-300 text-[10px] tracking-widest uppercase italic">{i===0 ? 'Column A' : i===1 ? 'Column B' : 'Column C'}</div>
-                                            <div className={`rounded-[3rem] border-2 p-10 h-[550px] flex flex-col transition-all duration-500 ${card ? 'bg-white shadow-2xl border-white hover:border-indigo-50' : 'bg-slate-100 border-dashed border-slate-200'}`}>
+                                            <div className="text-center font-black text-indigo-300 text-[10px] tracking-widest uppercase italic leading-none">{i===0 ? 'Column A' : i===1 ? 'Column B' : 'Column C'}</div>
+                                            <div className={`rounded-[3rem] border-2 p-10 h-[550px] flex flex-col transition-all duration-500 ${card ? 'bg-white shadow-2xl border-white' : 'bg-slate-100 border-dashed border-slate-200'}`}>
                                                 {card && (
                                                     <div className="h-full flex flex-col overflow-hidden">
                                                         <input className="w-full text-2xl font-black outline-none border-none bg-transparent mb-4 leading-none" value={card.header} onChange={e => updateCard(cid, {header: e.target.value})} />
@@ -365,12 +321,12 @@
                             </div>
                             <div className="fixed bottom-8 left-0 right-0 flex justify-center z-[2000] px-6">
                                 <div className="bg-white/80 backdrop-blur-xl border border-slate-200 p-3 rounded-full shadow-2xl flex items-center gap-6">
-                                    <button onClick={() => setView('edit')} className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500 transition-colors">Exit</button>
+                                    <button onClick={() => setView('edit')} className="pl-6 pr-2 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500">Exit</button>
                                     <div className="h-10 w-[1px] bg-slate-200"></div>
                                     <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest px-4 whitespace-nowrap">SET {currentRow + 1} / {reviewRows.length}</span>
                                     {currentRow < reviewRows.length - 1 ? 
-                                        <button onClick={()=>{setCurrentRow(currentRow+1); window.scrollTo(0,0);}} className="bg-indigo-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-xl transition-all">Next Set</button> :
-                                        <button onClick={async () => { const a=[], b=[], c=[]; reviewRows.forEach(r => { if(r[0]) a.push(r[0]); if(r[1]) b.push(r[1]); if(r[2]) c.push(r[2]); }); const ni = [...a, ...b, ...c]; await saveStackFile(activeStack.id, ni, activeStack.notes); setActiveStack({...activeStack, cardIds: ni}); setView('edit'); }} className="bg-emerald-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase tracking-widest shadow-xl italic">Sweep & Save</button>
+                                        <button onClick={()=>{setCurrentRow(currentRow+1); window.scrollTo(0,0);}} className="bg-indigo-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase tracking-widest shadow-xl">Next</button> :
+                                        <button onClick={async () => { const a=[], b=[], c=[]; reviewRows.forEach(r => { if(r[0]) a.push(r[0]); if(r[1]) b.push(r[1]); if(r[2]) c.push(r[2]); }); const ni = [...a, ...b, ...c]; await saveStackFile(activeStack.id, ni, activeStack.notes); setActiveStack({...activeStack, cardIds: ni}); setView('edit'); }} className="bg-emerald-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase shadow-xl italic">Sweep & Save</button>
                                     }
                                 </div>
                             </div>
