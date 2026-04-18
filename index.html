@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro: Master Studio v12</title>
+    <title>Sweep Sync Pro: Master Studio v13</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -63,7 +63,7 @@
                                 const resolved = Object.values(library).find(c => c.header === rawIdOrName);
                                 if (resolved) { finalId = resolved.id; displayLabel = resolved.header; }
                             } else if (type === 'Card' && rawIdOrName.startsWith('c_')) {
-                                displayLabel = pipedLabel || library[rawIdOrName]?.header || "Deleted Card";
+                                displayLabel = pipedLabel || library[rawIdOrName]?.header || "Unknown Card";
                             }
                             return (
                                 <span key={i} className="wiki-link" onClick={(e) => { 
@@ -81,7 +81,7 @@
             const [isGapiReady, setIsGapiReady] = useState(false);
             const [token, setToken] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
-            const [syncStatus, setSyncStatus] = useState('saved'); // saved, syncing, offline, expired
+            const [syncStatus, setSyncStatus] = useState('saved');
             const [lastSyncTime, setLastSyncTime] = useState(null);
             
             const [view, setView] = useState('library'); 
@@ -106,7 +106,7 @@
 
             const saveTimeoutRef = useRef(null);
 
-            // --- STUDIO PULSE LOGIC ---
+            // --- HEARTBEAT & SYNC ---
             useEffect(() => {
                 const init = setInterval(() => {
                     if (window.gapi && window.google) {
@@ -118,17 +118,11 @@
                         });
                     }
                 }, 500);
-
                 const handleOffline = () => setSyncStatus('offline');
                 const handleOnline = () => setSyncStatus('saved');
                 window.addEventListener('offline', handleOffline);
                 window.addEventListener('online', handleOnline);
-
-                return () => {
-                    clearInterval(init);
-                    window.removeEventListener('offline', handleOffline);
-                    window.removeEventListener('online', handleOnline);
-                };
+                return () => { clearInterval(init); window.removeEventListener('offline', handleOffline); window.removeEventListener('online', handleOnline); };
             }, []);
 
             const handleLogin = () => {
@@ -149,9 +143,7 @@
                     }
                     await refreshStacks(at);
                     setLastSyncTime(new Date().toLocaleTimeString());
-                } catch (err) {
-                    setSyncStatus('offline');
-                } finally { setIsLoading(false); }
+                } catch (err) { setSyncStatus('offline'); } finally { setIsLoading(false); }
             };
 
             const refreshStacks = async (at) => {
@@ -168,7 +160,6 @@
                 setStacks(withCounts);
             };
 
-            // --- PERSISTENCE ---
             const forceSaveMaster = async (nl) => {
                 if (!navigator.onLine) { setSyncStatus('offline'); return; }
                 setSyncStatus('syncing');
@@ -178,7 +169,6 @@
                     const id = list.result.files[0]?.id;
                     const url = id ? `https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media` : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
                     const method = id ? 'PATCH' : 'POST';
-                    
                     let response;
                     if (id) {
                         response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: blob });
@@ -189,15 +179,10 @@
                         form.append('file', blob);
                         response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: form });
                     }
-
                     if (response.status === 401) { setSyncStatus('expired'); return; }
-                    if (!response.ok) throw new Error();
-                    
                     setSyncStatus('saved');
                     setLastSyncTime(new Date().toLocaleTimeString());
-                } catch (e) {
-                    setSyncStatus('offline');
-                }
+                } catch (e) { setSyncStatus('offline'); }
             };
 
             const saveStackFile = async (sid, ids, notes) => {
@@ -206,8 +191,7 @@
                 try {
                     const blob = new Blob([JSON.stringify({ cardIds: ids, notes: notes || "" })], { type: 'application/json' });
                     const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${sid}?uploadType=media`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: blob });
-                    if (res.status === 401) setSyncStatus('expired');
-                    else setSyncStatus('saved');
+                    if (res.status === 401) setSyncStatus('expired'); else setSyncStatus('saved');
                 } catch (e) { setSyncStatus('offline'); }
             };
 
@@ -221,7 +205,9 @@
                 });
             };
 
+            // --- NAVIGATION & DISCOVERY ---
             const handleJump = (type, idOrName) => {
+                // Transactional Switch: Ensure current card is saved before moving
                 if (saveTimeoutRef.current) {
                     clearTimeout(saveTimeoutRef.current);
                     forceSaveMaster(masterLibrary);
@@ -239,23 +225,12 @@
                 }
             };
 
-            const openStack = async (stack) => {
-                setIsLoading(true);
-                try {
-                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${stack.id}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
-                    const data = await res.json();
-                    const ids = Array.isArray(data) ? data : (data.cardIds || []);
-                    setActiveStack({ ...stack, cardIds: ids.filter(id => masterLibrary[id]), notes: data.notes || "" });
-                    setView('edit');
-                } finally { setIsLoading(false); }
-            };
-
             const getExtendedMedia = (cid) => {
                 const card = masterLibrary[cid]; if (!card) return [];
                 const ownMedia = card.media || [];
                 const matches = (card.description || "").matchAll(/\[\[Card:([^|\]]+)(?:\|[^\]]+)?\]\]/g);
                 const linkedMedia = [];
-                const seen = new Set([cid]);
+                const seen = new Set([cid]); // Recursion Guard
                 for (const match of matches) {
                     const idOrName = match[1];
                     let target = masterLibrary[idOrName];
@@ -266,6 +241,17 @@
                     }
                 }
                 return [...ownMedia, ...linkedMedia];
+            };
+
+            const openStack = async (stack) => {
+                setIsLoading(true);
+                try {
+                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${stack.id}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
+                    const data = await res.json();
+                    const ids = Array.isArray(data) ? data : (data.cardIds || []);
+                    setActiveStack({ ...stack, cardIds: ids.filter(id => masterLibrary[id]), notes: data.notes || "" });
+                    setView('edit');
+                } finally { setIsLoading(false); }
             };
 
             const handleUnifiedAdd = async (e) => {
@@ -303,79 +289,66 @@
             return (
                 <div className="max-w-7xl mx-auto p-4 md:p-8 pb-40">
                     
-                    {/* CRITICAL SYNC OVERLAY (STUDIO PULSE PROTECTION) */}
+                    {/* STUDIO PULSE HUD */}
                     {(syncStatus === 'offline' || syncStatus === 'expired') && (
                         <div className="fixed inset-0 z-[10000] bg-slate-900/90 backdrop-blur-xl flex items-center justify-center p-6 text-center">
                             <div className="bg-white p-12 rounded-[4rem] max-w-md shadow-2xl modal-enter">
                                 <div className={`w-16 h-16 rounded-full mx-auto mb-6 flex items-center justify-center text-2xl animate-pulse ${syncStatus === 'offline' ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'}`}>
                                     {syncStatus === 'offline' ? '📡' : '🔑'}
                                 </div>
-                                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tighter mb-4">
-                                    {syncStatus === 'offline' ? 'Connection Severed' : 'Session Expired'}
-                                </h2>
-                                <p className="text-slate-500 text-sm font-medium leading-relaxed mb-8">
-                                    {syncStatus === 'offline' 
-                                        ? "Your internet connection was lost. We've locked the interface to prevent unsaved changes from being overwritten." 
-                                        : "Your Google session has timed out. Please re-authenticate to continue syncing your knowledge base."}
-                                </p>
-                                <button onClick={handleLogin} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-xs shadow-xl hover:bg-indigo-700 transition-all">Restore Sync</button>
+                                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tighter mb-4">{syncStatus === 'offline' ? 'Sync Severed' : 'Session Expired'}</h2>
+                                <p className="text-slate-500 text-sm font-medium leading-relaxed mb-8">Interface locked to prevent data loss. Re-establish Drive link to continue.</p>
+                                <button onClick={handleLogin} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-xs shadow-xl">Restore Link</button>
                             </div>
                         </div>
                     )}
 
-                    {/* STUDIO PULSE INDICATOR */}
                     <div className="fixed bottom-6 right-6 z-[8000] flex flex-col items-end gap-2">
                         <div className={`glass px-5 py-3 rounded-2xl flex items-center gap-4 shadow-2xl border-2 transition-all ${syncStatus === 'saved' ? 'border-emerald-100' : 'border-indigo-100 pulse-glow'}`}>
                             <div className="flex flex-col text-right">
                                 <span className={`text-[8px] font-black uppercase tracking-widest leading-none mb-1 ${syncStatus === 'saved' ? 'text-emerald-500' : 'text-indigo-500'}`}>Studio Pulse</span>
-                                <span className="text-[10px] font-bold text-slate-400">Sync: {lastSyncTime || 'Pending'}</span>
+                                <span className="text-[10px] font-bold text-slate-400">Sync: {lastSyncTime || '...'}</span>
                             </div>
                             <div className={`w-4 h-4 rounded-full ${syncStatus === 'saved' ? 'bg-emerald-500' : 'bg-indigo-600 animate-ping'}`}></div>
                         </div>
                     </div>
 
-                    {isLoading && (
-                        <div className="fixed inset-0 z-[9000] bg-white/80 backdrop-blur-md flex flex-col items-center justify-center">
-                            <div className="loading-spin mb-4"></div>
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Accessing Vault</span>
-                        </div>
-                    )}
+                    {isLoading && <div className="fixed inset-0 z-[9000] bg-white/80 backdrop-blur-md flex flex-col items-center justify-center"><div className="loading-spin mb-4"></div></div>}
 
                     {zoomUrl && (
                         <div className="fixed inset-0 z-[6000] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setZoomUrl(null)}>
-                            {zoomUrl.includes('video') || zoomUrl.startsWith('data:video') ? 
-                                <video src={zoomUrl} controls autoPlay loop className="max-w-full max-h-full" /> : 
-                                <img src={zoomUrl} className="max-w-full max-h-full object-contain shadow-2xl" />
-                            }
+                            {zoomUrl.includes('video') || zoomUrl.startsWith('data:video') ? <video src={zoomUrl} controls autoPlay loop className="max-w-full max-h-full" /> : <img src={zoomUrl} className="max-w-full max-h-full object-contain shadow-2xl" />}
                         </div>
                     )}
 
-                    {/* FOCUS EDITOR */}
+                    {/* FOCUS EDITOR (GRAPH INTEGRATED) */}
                     {focusedCardId && masterLibrary[focusedCardId] && (
                         <div className="fixed inset-0 z-[4000] bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-4 md:p-10">
                             <div className="bg-white w-full max-w-7xl h-[92vh] rounded-[4rem] shadow-2xl flex flex-col overflow-hidden modal-enter relative">
                                 <div className="p-6 border-b flex justify-between items-center bg-slate-50 shrink-0">
                                     <div className="flex gap-4 items-center">
                                         <div className="w-3 h-3 bg-indigo-500 rounded-full animate-pulse"></div>
-                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Knowledge Workspace</span>
+                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Graph Workspace</span>
                                     </div>
                                     <button onClick={() => setFocusedCardId(null)} className="text-slate-300 hover:text-rose-500 font-black text-4xl transition-colors">×</button>
                                 </div>
                                 <div className="flex-1 flex overflow-hidden">
+                                    {/* Aggregate Gallery Sidebar */}
                                     <div className="w-1/4 flex flex-col gap-4 p-8 overflow-y-auto border-r bg-slate-50 shrink-0">
-                                        <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b pb-2 italic">Discovery Gallery</h4>
+                                        <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b pb-2 italic">Visual Discovery</h4>
                                         <div className="grid grid-cols-1 gap-4">
                                             {getExtendedMedia(focusedCardId).map((m, idx) => (
-                                                <div key={idx} className="relative aspect-video rounded-3xl bg-black overflow-hidden group border-2 border-transparent hover:border-indigo-400 cursor-zoom-in transition-all shadow-md" onClick={() => setZoomUrl(m.url)}>
-                                                    <MediaViewer item={m} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" autoPlay={false} />
-                                                    {m.source && <div className="absolute bottom-2 left-2 glass px-2 py-1 rounded-lg text-[8px] font-black text-indigo-600 truncate max-w-[80%]">Ref: {m.source}</div>}
-                                                    {!m.source && (
+                                                <div key={idx} className="relative aspect-video rounded-[2rem] bg-black overflow-hidden group border-2 border-transparent hover:border-indigo-400 cursor-zoom-in transition-all shadow-md" onClick={() => setZoomUrl(m.url)}>
+                                                    <MediaViewer item={m} className="w-full h-full object-cover opacity-80 group-hover:opacity-100" autoPlay={false} />
+                                                    {m.source ? (
+                                                        <div className="absolute bottom-2 left-2 glass px-2 py-1 rounded-lg text-[8px] font-black text-indigo-600 truncate max-w-[80%]">Ref: {m.source}</div>
+                                                    ) : (
                                                         <button onClick={(e) => { e.stopPropagation(); updateCard(focusedCardId, { media: masterLibrary[focusedCardId].media.filter((_, i) => i !== idx) }, true); }} className="absolute top-2 right-2 bg-rose-500 text-white w-6 h-6 rounded-full font-black text-xs opacity-0 group-hover:opacity-100 transition-opacity">×</button>
                                                     )}
                                                 </div>
                                             ))}
-                                            <label className="aspect-video border-2 border-dashed border-slate-300 rounded-3xl flex flex-col items-center justify-center text-slate-400 font-black text-[10px] uppercase cursor-pointer hover:bg-white hover:border-indigo-400 transition-all">
-                                                <span>+ Add Local</span>
+                                            <label className="aspect-video border-2 border-dashed border-slate-300 rounded-[2rem] flex flex-col items-center justify-center text-slate-400 font-black text-[10px] uppercase cursor-pointer hover:bg-white hover:border-indigo-400 transition-all">
+                                                <span>+ Add Media</span>
                                                 <input type="file" multiple hidden accept="image/*,video/*" onChange={e => {
                                                     const fs = Array.from(e.target.files);
                                                     const upload = async () => {
@@ -390,17 +363,20 @@
                                             </label>
                                         </div>
                                     </div>
+                                    {/* Integrated Editor */}
                                     <div className="flex-1 flex flex-col p-12 overflow-hidden bg-white">
-                                        <input className="text-4xl font-black outline-none border-b-4 border-slate-50 focus:border-indigo-500 pb-4 mb-8 transition-colors" value={masterLibrary[focusedCardId].header} onChange={e => updateCard(focusedCardId, {header: e.target.value})} />
+                                        <input className="text-4xl font-black outline-none border-b-4 border-slate-50 focus:border-indigo-500 pb-4 mb-8" value={masterLibrary[focusedCardId].header} onChange={e => updateCard(focusedCardId, {header: e.target.value})} />
                                         <div className="flex-1 overflow-y-auto space-y-10 pr-4">
+                                            {/* NoteRenderer with handleJump (Deep Modal Jumping) */}
                                             <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-slate-100 shadow-inner">
                                                 <NoteRenderer text={masterLibrary[focusedCardId].description} onJump={handleJump} library={masterLibrary} />
                                             </div>
-                                            <textarea className="w-full min-h-[400px] text-slate-600 text-lg outline-none resize-none leading-relaxed font-medium" placeholder="Studio notes..." value={masterLibrary[focusedCardId].description} onChange={e => updateCard(focusedCardId, {description: e.target.value})} />
+                                            <textarea className="w-full min-h-[400px] text-slate-600 text-lg outline-none resize-none leading-relaxed font-medium" placeholder="Expand knowledge base..." value={masterLibrary[focusedCardId].description} onChange={e => updateCard(focusedCardId, {description: e.target.value})} />
                                         </div>
                                     </div>
+                                    {/* Sidebar Linker */}
                                     <div className="w-1/5 flex flex-col p-8 bg-slate-900 shrink-0">
-                                        <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-6 border-b border-white/10 pb-4 italic">Link Card</h4>
+                                        <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-6 border-b border-white/10 pb-4 italic">Quick Linker</h4>
                                         <input className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-xs font-bold text-white outline-none focus:ring-2 ring-indigo-500 mb-6" placeholder="Search Master..." value={editorSearch} onChange={e => setEditorSearch(e.target.value)} />
                                         <div className="flex-1 overflow-y-auto space-y-2">
                                             {Object.values(masterLibrary).filter(c => c.header.toLowerCase().includes(editorSearch.toLowerCase()) && c.id !== focusedCardId).slice(0, 15).map(c => (
@@ -413,7 +389,6 @@
                         </div>
                     )}
 
-                    {/* STACK NAV */}
                     <nav className="flex justify-between items-center mb-10 bg-white p-8 rounded-[3rem] shadow-sm border border-slate-200">
                         <div className="flex items-center gap-4">
                             {view !== 'library' && <button onClick={() => setView('library')} className="font-bold text-slate-400 hover:text-indigo-600 transition-all text-xs uppercase tracking-tighter">← Back</button>}
@@ -421,17 +396,12 @@
                         </div>
                         <div className="flex gap-2">
                             {view === 'library' ? (
-                                <button onClick={() => { const n = prompt("Name:"); if(n) { setIsLoading(true); const m = { name: `sweep_stack_${n}.json`, mimeType: 'application/json' }; const b = new Blob([JSON.stringify({ cardIds: [], notes: "" })], { type: 'application/json' }); const f = new FormData(); f.append('metadata', new Blob([JSON.stringify(m)], { type: 'application/json' })); f.append('file', b); fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: f }).then(() => bootSystem(token)); } }} className="bg-indigo-600 text-white px-8 py-4 rounded-full font-black text-xs uppercase shadow-xl hover:scale-105 transition-all">+ NEW STACK</button>
+                                <button onClick={() => { const n = prompt("Name:"); if(n) { setIsLoading(true); const m = { name: `sweep_stack_${n}.json`, mimeType: 'application/json' }; const b = new Blob([JSON.stringify({ cardIds: [], notes: "" })], { type: 'application/json' }); const f = new FormData(); f.append('metadata', new Blob([JSON.stringify(m)], { type: 'application/json' })); f.append('file', b); fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: f }).then(() => bootSystem(token)); } }} className="bg-indigo-600 text-white px-8 py-4 rounded-full font-black text-xs uppercase shadow-xl hover:scale-105">+ NEW STACK</button>
                             ) : (
                                 <>
                                     <button onClick={() => setShowBorrowModal(true)} className="bg-emerald-500 text-white px-6 py-4 rounded-2xl font-black text-xs uppercase shadow-md transition-all hover:scale-105">Sync Library</button>
                                     <label className="bg-slate-800 text-white px-6 py-4 rounded-2xl font-black text-xs uppercase shadow-md cursor-pointer transition-all hover:scale-105">Add Cards<input type="file" multiple hidden accept="image/*,video/*" onChange={handleUnifiedAdd} /></label>
-                                    <button onClick={() => {
-                                        const ids = activeStack.cardIds.filter(id => masterLibrary[id]);
-                                        const rows = [];
-                                        for (let i = 0; i < ids.length; i += 3) rows.push(ids.slice(i, i + 3));
-                                        setReviewRows(rows); setCurrentRow(0); setView('review');
-                                    }} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:scale-105">Sweep</button>
+                                    <button onClick={() => { const ids = activeStack.cardIds.filter(id => masterLibrary[id]); const rows = []; for (let i = 0; i < ids.length; i += 3) rows.push(ids.slice(i, i + 3)); setReviewRows(rows); setCurrentRow(0); setView('review'); }} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:scale-105">Sweep</button>
                                 </>
                             )}
                         </div>
@@ -498,15 +468,15 @@
                                                 <div className="flex-1 overflow-y-auto pr-2" onClick={() => !isEditing && setEditingNoteId(cid)}>
                                                     {isEditing ? (
                                                         <div className="h-full flex flex-col">
-                                                            <textarea autoFocus className="flex-1 w-full bg-slate-50 rounded-3xl p-6 text-sm font-medium outline-none border-2 border-indigo-200 shadow-inner" value={card.description} onChange={e => updateCard(cid, {description: e.target.value})} />
+                                                            <textarea autoFocus className="flex-1 w-full bg-slate-50 rounded-3xl p-6 text-sm font-medium outline-none border-2 border-indigo-200" value={card.description} onChange={e => updateCard(cid, {description: e.target.value})} />
                                                             <div className="mt-4 bg-indigo-600 p-6 rounded-[2rem] shadow-2xl border border-indigo-500">
-                                                                <input className="w-full bg-white border border-white/20 rounded-xl p-3 text-xs font-bold text-slate-800 outline-none mb-4" placeholder="Deep link card..." value={reviewSearch} onChange={e => setReviewSearch(e.target.value)} />
+                                                                <input className="w-full bg-white rounded-xl p-3 text-xs font-bold text-slate-800 outline-none mb-4" placeholder="Deep link..." value={reviewSearch} onChange={e => setReviewSearch(e.target.value)} />
                                                                 <div className="flex flex-wrap gap-2">
                                                                     {Object.values(masterLibrary).filter(x => x.header.toLowerCase().includes(reviewSearch.toLowerCase()) && x.id !== cid).slice(0,5).map(x => (
-                                                                        <button key={x.id} onClick={() => { updateCard(cid, { description: (masterLibrary[cid].description || "") + ` [[Card:${x.id}|${x.header}]]` }); setReviewSearch(''); }} className="bg-white text-indigo-600 text-[10px] font-black px-3 py-1 rounded-full shadow-sm hover:scale-105 transition-transform">📄 {x.header}</button>
+                                                                        <button key={x.id} onClick={() => { updateCard(cid, { description: (masterLibrary[cid].description || "") + ` [[Card:${x.id}|${x.header}]]` }); setReviewSearch(''); }} className="bg-white text-indigo-600 text-[10px] font-black px-3 py-1 rounded-full">📄 {x.header}</button>
                                                                     ))}
                                                                 </div>
-                                                                <button onClick={() => setEditingNoteId(null)} className="mt-4 w-full text-center text-white text-[10px] font-black uppercase tracking-widest pt-3 border-t border-indigo-400 opacity-70 hover:opacity-100 transition-opacity">Return to Flow</button>
+                                                                <button onClick={() => setEditingNoteId(null)} className="mt-4 w-full text-center text-white text-[10px] font-black uppercase pt-3 border-t border-indigo-400">Return</button>
                                                             </div>
                                                         </div>
                                                     ) : (
@@ -515,8 +485,8 @@
                                                 </div>
                                             </div>
                                             <div className="flex justify-center gap-3">
-                                                <button disabled={i===0} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i-1]] = [r[i-1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-8 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 border hover:bg-slate-50 transition-all uppercase tracking-tighter italic">← Swap</button>
-                                                <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i+1]] = [r[i+1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-8 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 border hover:bg-slate-50 transition-all uppercase tracking-tighter italic">Swap →</button>
+                                                <button disabled={i===0} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i-1]] = [r[i-1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-8 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 border hover:bg-slate-50 transition-all uppercase italic">← Swap</button>
+                                                <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i+1]] = [r[i+1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-8 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 border hover:bg-slate-50 transition-all uppercase italic">Swap →</button>
                                             </div>
                                         </div>
                                     )
@@ -524,26 +494,16 @@
                             </div>
                             <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[1500] w-full max-w-3xl px-6">
                                 <div className="glass p-3 rounded-full shadow-2xl flex items-center justify-between border-2 border-indigo-100">
-                                    <button onClick={async () => { await forceSaveMaster(masterLibrary); setView('edit'); }} className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500 transition-all">Exit Studio</button>
+                                    <button onClick={async () => { await forceSaveMaster(masterLibrary); setView('edit'); }} className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500">Exit Studio</button>
                                     <div className="flex items-center gap-3">
-                                        <button disabled={currentRow === 0} onClick={() => { setCurrentRow(c => c-1); window.scrollTo(0,0); }} className="bg-slate-100 text-slate-800 px-8 py-4 rounded-full font-black text-[11px] uppercase disabled:opacity-30 tracking-widest">Prev Set</button>
+                                        <button disabled={currentRow === 0} onClick={() => { setCurrentRow(c => c-1); window.scrollTo(0,0); }} className="bg-slate-100 text-slate-800 px-8 py-4 rounded-full font-black text-[11px] uppercase tracking-widest">Prev</button>
                                         <span className="text-[12px] font-black text-indigo-400 px-6 uppercase italic tracking-widest">{currentRow + 1} / {reviewRows.length}</span>
                                         {currentRow < reviewRows.length - 1 ? 
                                             <button onClick={()=>{setCurrentRow(currentRow+1); window.scrollTo(0,0);}} className="bg-indigo-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase shadow-xl hover:bg-indigo-700 tracking-widest">Next Set</button> :
-                                            <button onClick={async () => {
-                                                setIsLoading(true);
-                                                const colA = [], colB = [], colC = [];
-                                                reviewRows.forEach(row => { if (row[0]) colA.push(row[0]); if (row[1]) colB.push(row[1]); if (row[2]) colC.push(row[2]); });
-                                                const newOrder = [...colA, ...colB, ...colC];
-                                                await forceSaveMaster(masterLibrary);
-                                                await saveStackFile(activeStack.id, newOrder, activeStack.notes);
-                                                setActiveStack({...activeStack, cardIds: newOrder});
-                                                setView('edit');
-                                                setIsLoading(false);
-                                            }} className="bg-emerald-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase shadow-xl italic tracking-widest">Complete Sweep</button>
+                                            <button onClick={async () => { setIsLoading(true); const colA = [], colB = [], colC = []; reviewRows.forEach(row => { if (row[0]) colA.push(row[0]); if (row[1]) colB.push(row[1]); if (row[2]) colC.push(row[2]); }); const newOrder = [...colA, ...colB, ...colC]; await forceSaveMaster(masterLibrary); await saveStackFile(activeStack.id, newOrder, activeStack.notes); setActiveStack({...activeStack, cardIds: newOrder}); setView('edit'); setIsLoading(false); }} className="bg-emerald-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase shadow-xl italic tracking-widest">Complete Sweep</button>
                                         }
                                     </div>
-                                    <button onClick={() => setIsNotepadOpen(true)} className="px-8 py-4 text-[10px] font-black text-indigo-400 uppercase hover:text-indigo-600 tracking-widest">Notebook</button>
+                                    <button onClick={() => setIsNotepadOpen(true)} className="px-8 py-4 text-[10px] font-black text-indigo-400 uppercase hover:text-indigo-600">Notebook</button>
                                 </div>
                             </div>
                         </div>
@@ -554,14 +514,11 @@
                         <div className="fixed inset-0 bg-slate-900/98 flex items-center justify-center p-6 z-[2002] animate-in fade-in duration-300">
                             <div className="bg-white w-full max-w-7xl max-h-[90vh] rounded-[5rem] overflow-hidden flex flex-col p-16 shadow-2xl relative">
                                 <div className="flex flex-col md:flex-row justify-between items-center mb-12 gap-8">
-                                    <div className="flex-1">
-                                        <h2 className="text-4xl font-black text-indigo-600 italic uppercase leading-none tracking-tighter mb-2">Sync Studio Library</h2>
-                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Pull knowledge from the master vault</p>
-                                    </div>
-                                    <input className="flex-1 max-w-xl bg-slate-100 rounded-[2rem] px-8 py-5 font-bold outline-none ring-indigo-100 focus:ring-8 transition-all shadow-inner" placeholder="Search Master..." value={borrowSearch} onChange={e => setBorrowSearch(e.target.value)} />
+                                    <div className="flex-1"><h2 className="text-4xl font-black text-indigo-600 italic uppercase leading-none tracking-tighter mb-2">Sync Studio Library</h2><p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Pull knowledge from the master vault</p></div>
+                                    <input className="flex-1 max-w-xl bg-slate-100 rounded-[2rem] px-8 py-5 font-bold outline-none focus:ring-8 transition-all" placeholder="Search Master..." value={borrowSearch} onChange={e => setBorrowSearch(e.target.value)} />
                                     <div className="flex gap-4">
-                                        {borrowSelection.length > 0 && <button onClick={() => { const ni = [...activeStack.cardIds, ...borrowSelection]; setActiveStack({...activeStack, cardIds: ni}); saveStackFile(activeStack.id, ni, activeStack.notes); setShowBorrowModal(false); setBorrowSelection([]); }} className="bg-emerald-600 text-white px-10 py-5 rounded-full font-black text-xs uppercase shadow-2xl active:scale-95 transition-all">IMPORT {borrowSelection.length} CARDS</button>}
-                                        <button onClick={() => {setShowBorrowModal(false); setBorrowSelection([]);}} className="text-5xl text-slate-200 hover:text-rose-500 font-bold transition-colors">×</button>
+                                        {borrowSelection.length > 0 && <button onClick={() => { const ni = [...activeStack.cardIds, ...borrowSelection]; setActiveStack({...activeStack, cardIds: ni}); saveStackFile(activeStack.id, ni, activeStack.notes); setShowBorrowModal(false); setBorrowSelection([]); }} className="bg-emerald-600 text-white px-10 py-5 rounded-full font-black text-xs uppercase shadow-2xl">IMPORT {borrowSelection.length} CARDS</button>}
+                                        <button onClick={() => {setShowBorrowModal(false); setBorrowSelection([]);}} className="text-5xl text-slate-200 hover:text-rose-500 font-bold">×</button>
                                     </div>
                                 </div>
                                 <div className="flex-1 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-8 pr-4 pb-10">
@@ -569,7 +526,7 @@
                                         const isSel = borrowSelection.includes(card.id);
                                         const inStack = (activeStack?.cardIds || []).includes(card.id);
                                         return (
-                                            <div key={card.id} onClick={() => !inStack && setBorrowSelection(s => isSel ? s.filter(x => x!==card.id) : [...s, card.id])} className={`bg-slate-50 border-4 p-6 rounded-[3rem] flex flex-col gap-4 group cursor-pointer transition-all ${isSel ? 'border-indigo-600 ring-8 ring-indigo-50 shadow-2xl scale-[1.05]' : 'border-transparent'} ${inStack ? 'opacity-30 grayscale cursor-not-allowed' : 'hover:border-indigo-200 hover:shadow-xl'}`}>
+                                            <div key={card.id} onClick={() => !inStack && setBorrowSelection(s => isSel ? s.filter(x => x!==card.id) : [...s, card.id])} className={`bg-slate-50 border-4 p-6 rounded-[3rem] flex flex-col gap-4 group cursor-pointer transition-all ${isSel ? 'border-indigo-600 ring-8 ring-indigo-50 shadow-2xl scale-[1.05]' : 'border-transparent'} ${inStack ? 'opacity-30 grayscale cursor-not-allowed' : 'hover:border-indigo-200'}`}>
                                                 <h4 className="font-black text-slate-800 text-[11px] uppercase truncate tracking-tighter">{card.header}</h4>
                                                 <div className="bg-slate-200 aspect-video rounded-3xl overflow-hidden shadow-inner">
                                                     {card.media?.[0] && <MediaViewer item={card.media[0]} className="w-full h-full object-cover" autoPlay={false} />}
@@ -598,23 +555,21 @@
 MASTER FEATURE LIST:
 - Master/Stack Decoupling: Card content lives in a global library; stacks store only ID references.
 - Triple-Column Sweep: Row-based swapping with Vertical Harvesting (A -> B -> C sequence).
-- Recursive Media Discovery: Cards pull media from all [[Card:ID]] references in their notes.
-- Deep-Modal Navigation: Wiki-links in the editor are interactive, allowing "jumping" through the knowledge graph without closing the focus view.
+- Recursive Media Discovery (Studio & Sweep): Focus Modal and Review slots pull media from all [[Card:ID]] references in notes.
+- Deep-Modal Navigation: Wiki-links in the Focus View are interactive. Clicking a link saves current progress and immediately pivots the modal to the linked card.
 - Studio Pulse Monitoring: Real-time sync heartbeat that monitors internet connectivity and GAPI token validity.
-- Air-Gap Protection Overlay: UI-blocking modal that triggers if sync is severed, preventing local data loss or overwriting.
+- Air-Gap Protection Overlay: UI-blocking modal that triggers if sync is severed, preventing local data loss.
 - Persistent Wiki-Linking: Hybrid resolver for ID-based or Title-based links.
 - Transactional Sync: UI-blocking "Securing Data" states for destructive or context-switching actions.
-- Kinetic Video: Muted, looping, playsinline media defaults for non-disruptive study.
 
 COMMON ERROR LIST:
-- Sync Latency Overlap: If a user types during an "Offline" state, changes could be lost on refresh. Fixed via the Pulse Lockout overlay.
-- Token Expiry Crash: Google Drive sessions expire every hour. App now catches 401 errors and forces a re-auth modal.
-- Reference Collision: If jumping between cards in Focus Mode, pending saves from the previous card must be forced/cleared before updating focusedCardId.
+- Context Switch Save Races: Fixed by handleJump forcing a forceSaveMaster(masterLibrary) before updating the focus ID.
+- Circular Discovery Loops: Fixed in getExtendedMedia by using a Set to track visited card IDs, preventing infinite gallery recursion.
+- Token Expiry Mid-Edit: App now catches 401 errors during all Drive operations and presents the Re-auth Studio Pulse overlay.
 - Broken Reference Healing: Stacks automatically filter out IDs that have been deleted from the Master Library upon opening.
-- Circular Media Loops: Discovery logic uses a "Seen" Set to prevent infinite recursion in the gallery if cards link to each other.
 
 3. ECOLOGY AUDIT & COMMON SENSE AUDIT:
-- Sync Accountability: In previous versions, if the GAPI token expired mid-session, the user would see "Syncing..." indefinitely or fail silently. The new 401 catch and Offline listener make the app "aware" of its environmental state.
-- Data Integrity: The "Jump" logic now explicitly forces a save of the current card's state before switching contexts. This prevents a race condition where Card A's notes are saved after Card B has already loaded, potentially causing library state confusion.
-- Studio Pulse UX: The indicator is subtle enough not to distract (green static) but becomes energetic (pinging indigo) during active writes, giving the user psychological confirmation of their productivity.
+- Graph Ecology: By allowing users to jump between cards within the same modal, the "Ecology" of the knowledge base becomes a navigable map rather than a series of isolated files.
+- Visual Synthesis: Displaying referenced media after original media in the gallery provides immediate visual context for linked ideas without requiring the user to manually switch cards.
+- Data Integrity: The explicit "save before jump" logic in handleJump is critical for a web-based Drive app, as it ensures that the "Library State" on Drive always reflects the user's latest thought before they transition to a new card.
 -->
