@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro: Knowledge Graph Studio</title>
+    <title>Sweep Sync Pro: Master Studio v7</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -13,11 +13,17 @@
     <style>
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .loading-spin { animation: spin 1s linear infinite; border: 3px solid #f3f3f3; border-top: 3px solid #4f46e5; border-radius: 50%; width: 30px; height: 30px; }
+        .loading-spin { animation: spin 1s linear infinite; border: 3px solid #f3f3f3; border-top: 3px solid #4f46e5; border-radius: 50%; width: 24px; height: 24px; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .drawer-transition { transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .drawer-transition { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .wiki-link { cursor: pointer; color: #4f46e5; font-weight: 800; text-decoration: underline; background: #f5f3ff; padding: 1px 6px; border-radius: 6px; border: 1px solid #ddd6fe; font-size: 0.85em; transition: all 0.2s; display: inline-block; position: relative; z-index: 10; }
         .wiki-link:hover { background: #4f46e5; color: white; }
+        .modal-enter { animation: modalIn 0.3s ease-out; }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+        .linker-sidebar { width: 280px; background: #fafafa; border-left: 1px solid #e5e7eb; overflow-y: auto; padding: 15px; }
+        .linker-item { padding: 8px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; border: 1px solid transparent; transition: all 0.2s; font-size: 11px; font-weight: 700; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .linker-item:hover { border-color: #4f46e5; color: #4f46e5; transform: translateX(-3px); }
         .review-linker-overlay { position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(255,255,255,0.98); backdrop-blur: 5px; border-top: 2px solid #4f46e5; z-index: 100; padding: 10px; box-shadow: 0 -10px 20px rgba(0,0,0,0.1); border-radius: 0 0 20px 20px; }
     </style>
 </head>
@@ -45,7 +51,7 @@
         };
 
         const NoteRenderer = memo(({ text, onJump }) => {
-            if (!text) return <p className="text-slate-300 italic text-xs">No notes... click to edit.</p>;
+            if (!text) return <p className="text-slate-300 italic text-xs">No notes provided...</p>;
             const parts = text.split(/(\[\[(?:Stack|Card):[^\]]+\]\])/g);
             return (
                 <div className="whitespace-pre-wrap leading-relaxed text-slate-600 text-sm">
@@ -84,8 +90,12 @@
             const [currentRow, setCurrentRow] = useState(0);
             const [reviewRows, setReviewRows] = useState([]);
             const [mediaIndices, setMediaIndices] = useState({});
-            const [linkerSearch, setLinkerSearch] = useState('');
-            const [borrowSearch, setBorrowSearch] = useState('');
+            
+            // Search Isolation States
+            const [localFilter, setLocalFilter] = useState(''); // Stack Grid Filter
+            const [linkerSearch, setLinkerSearch] = useState(''); // Focus Editor search
+            const [reviewLinkerSearch, setReviewLinkerSearch] = useState(''); // Review search
+            const [borrowSearch, setBorrowSearch] = useState(''); // Global borrow search
             const [borrowSelection, setBorrowSelection] = useState([]);
 
             const fileInputRef = useRef(null);
@@ -193,18 +203,11 @@
                 } finally { setIsLoading(false); }
             };
 
-            // NEW: RECURSIVE DISCOVERY ENGINE
-            const getExtendedMedia = (cid) => {
-                const card = masterLibrary[cid];
-                if (!card) return [];
-                const ownMedia = card.media || [];
-                const matches = (card.description || "").matchAll(/\[\[Card:([^\]]+)\]\]/g);
-                const linkedMedia = [];
-                for (const match of matches) {
-                    const target = Object.values(masterLibrary).find(c => c.header === match[1]);
-                    if (target && target.media) linkedMedia.push(...target.media);
-                }
-                return [...ownMedia, ...linkedMedia];
+            const removeCard = async (cid) => {
+                if(!confirm("Remove from stack?")) return;
+                const ni = activeStack.cardIds.filter(id => id !== cid);
+                setActiveStack(prev => ({...prev, cardIds: ni}));
+                await saveStackFile(activeStack.id, ni, activeStack.notes);
             };
 
             const handleJump = (type, name) => {
@@ -228,6 +231,19 @@
                 } finally { setIsLoading(false); }
             };
 
+            const getBacklinks = (cid) => {
+                const curT = masterLibrary[cid]?.header;
+                return curT ? Object.values(masterLibrary).filter(c => c.id !== cid && c.description?.includes(`[[Card:${curT}]]`)) : [];
+            };
+
+            const filteredEditGrid = useMemo(() => {
+                if(!activeStack) return [];
+                return activeStack.cardIds.filter(cid => {
+                    const c = masterLibrary[cid];
+                    return c && c.header.toLowerCase().includes(localFilter.toLowerCase());
+                });
+            }, [activeStack, masterLibrary, localFilter]);
+
             if (!isGapiReady) return <div className="h-screen flex items-center justify-center bg-white"><div className="loading-spin"></div></div>;
             if (!token) return (
                 <div className="h-screen flex items-center justify-center bg-slate-900 p-6 text-center">
@@ -239,59 +255,76 @@
                 </div>
             );
 
-            if (isLoading) return <div className="h-screen flex flex-col items-center justify-center bg-white"><div className="loading-spin"></div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-4">Syncing...</p></div>;
+            if (isLoading) return <div className="h-screen flex flex-col items-center justify-center bg-white"><div className="loading-spin"></div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-4">Safe Syncing...</p></div>;
 
             return (
                 <AppContext.Provider value={{ stacks, masterLibrary }}>
                 <div className="max-w-7xl mx-auto p-4 md:p-8 pb-40">
                     
-                    {zoomUrl && <div className="fixed inset-0 z-[6000] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setZoomUrl(null)}>{zoomUrl.includes('video') ? <video src={zoomUrl} controls autoPlay loop className="max-w-full max-h-full" /> : <img src={zoomUrl} className="max-w-full max-h-full object-contain" />}</div>}
+                    {zoomUrl && <div className="fixed inset-0 z-[6000] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setZoomUrl(null)}>{zoomUrl.includes('video') ? <video src={zoomUrl} controls autoPlay loop className="max-w-full max-h-full" /> : <img src={zoomUrl} className="max-w-full max-h-full object-contain shadow-2xl" />}</div>}
 
-                    {/* FOCUS EDITOR */}
+                    {/* CENTRAL FOCUS EDITOR MODAL */}
                     {focusedCardId && masterLibrary[focusedCardId] && (
                         <div className="fixed inset-0 z-[4000] bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-10">
                             <div className="bg-white w-full max-w-6xl h-[90vh] rounded-[3.5rem] shadow-2xl flex flex-col overflow-hidden modal-enter">
                                 <div className="p-6 border-b flex justify-between items-center bg-slate-50 shrink-0">
-                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Master Knowledge Hub</span>
-                                    <button onClick={() => setFocusedCardId(null)} className="text-slate-400 hover:text-rose-500 font-black text-3xl">×</button>
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Studio Knowledge Graph</span>
+                                    <button onClick={() => setFocusedCardId(null)} className="text-slate-400 hover:text-rose-500 font-black text-3xl transition-all">×</button>
                                 </div>
                                 <div className="flex-1 flex overflow-hidden">
+                                    {/* Left: Media & Backlinks */}
                                     <div className="w-1/3 flex flex-col gap-6 p-8 overflow-y-auto border-r bg-slate-50 shrink-0">
-                                        <div className="bg-slate-900 rounded-[2.5rem] aspect-square overflow-hidden shadow-inner relative group shrink-0 cursor-pointer" onClick={() => setZoomUrl(getExtendedMedia(focusedCardId)[0]?.url)}>
-                                            <MediaViewer item={getExtendedMedia(focusedCardId)[0]} className="w-full h-full object-contain" />
-                                            <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[8px] font-black uppercase">Zoom First Asset</div>
+                                        <div className="bg-slate-900 rounded-[2rem] aspect-square overflow-hidden shadow-inner relative group shrink-0 cursor-pointer" onClick={() => setZoomUrl(masterLibrary[focusedCardId].media[0]?.url)}>
+                                            {masterLibrary[focusedCardId].media?.[0] ? <MediaViewer item={masterLibrary[focusedCardId].media[0]} className="w-full h-full object-contain" /> : <span className="text-white/10 font-black block mt-20 text-center">NO MEDIA</span>}
                                         </div>
-                                        <label className="w-full py-4 bg-indigo-600 text-white rounded-2xl text-center font-black text-[10px] uppercase cursor-pointer hover:bg-indigo-700">
-                                            + Add Media
-                                            <input type="file" multiple hidden accept="image/*,video/*" onChange={e => {
-                                                const fs = Array.from(e.target.files);
-                                                fs.forEach(file => {
-                                                    const r = new FileReader();
-                                                    r.onload = ev => {
-                                                        const current = masterLibrary[focusedCardId].media || [];
-                                                        updateCard(focusedCardId, { media: [...current, { type: file.type.startsWith('video') ? 'video' : 'image', url: ev.target.result }] });
-                                                    };
-                                                    r.readAsDataURL(file);
-                                                });
-                                            }} />
-                                        </label>
+                                        <label className="bg-indigo-600 text-white p-3 rounded-xl font-black text-[9px] uppercase tracking-widest text-center cursor-pointer hover:bg-indigo-700 shadow-md">+ Add Image/Video<input type="file" multiple hidden accept="image/*,video/*" onChange={e => {
+                                            const fs = Array.from(e.target.files);
+                                            fs.forEach(file => {
+                                                const r = new FileReader(); r.onload = ev => {
+                                                    const cur = masterLibrary[focusedCardId].media || [];
+                                                    updateCard(focusedCardId, { media: [...cur, { type: file.type.startsWith('video') ? 'video' : 'image', url: ev.target.result }] });
+                                                }; r.readAsDataURL(file);
+                                            });
+                                        }} /></label>
+                                        
+                                        {/* Restored Media Management (Deletion) */}
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {(masterLibrary[focusedCardId].media || []).map((m, idx) => (
+                                                <div key={idx} className="relative aspect-square rounded-xl bg-black overflow-hidden group border">
+                                                    <MediaViewer item={m} className="w-full h-full object-cover opacity-70" autoPlay={false} />
+                                                    <button onClick={(e) => { e.stopPropagation(); updateCard(focusedCardId, { media: masterLibrary[focusedCardId].media.filter((_, i) => i !== idx) }); }} className="absolute top-1 right-1 bg-rose-500 text-white w-5 h-5 rounded-full font-black text-[10px] z-20">×</button>
+                                                </div>
+                                            ))}
+                                        </div>
+
                                         <div className="space-y-4 mt-6">
-                                            <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b pb-2">🖼️ All Visual References</h4>
-                                            <div className="grid grid-cols-2 gap-3">
-                                                {getExtendedMedia(focusedCardId).map((m, idx) => (
-                                                    <div key={idx} className="relative aspect-square rounded-xl bg-black overflow-hidden group cursor-pointer" onClick={() => setZoomUrl(m.url)}>
-                                                        <MediaViewer item={m} className="w-full h-full object-cover" autoPlay={false} />
-                                                        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[7px] font-black uppercase">Expand</div>
-                                                    </div>
-                                                ))}
-                                            </div>
+                                            <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b pb-2">🔗 Linked Back</h4>
+                                            {getBacklinks(focusedCardId).map(b => (
+                                                <button key={b.id} onClick={() => setFocusedCardId(b.id)} className="block text-[11px] font-bold text-indigo-600 hover:underline text-left truncate">📄 {b.header}</button>
+                                            ))}
                                         </div>
                                     </div>
+
+                                    {/* Center: Dual-State Note Editor */}
                                     <div className="flex-1 flex flex-col p-10 overflow-hidden bg-white">
                                         <input className="text-3xl font-black outline-none border-b-2 border-slate-100 focus:border-indigo-500 pb-4 mb-6 shrink-0" value={masterLibrary[focusedCardId].header} onChange={e => updateCard(focusedCardId, {header: e.target.value})} />
                                         <div className="flex-1 overflow-y-auto">
                                             <NoteRenderer text={masterLibrary[focusedCardId].description} onJump={handleJump} />
-                                            <textarea className="w-full mt-10 h-64 border-t pt-10 text-slate-400 text-base outline-none resize-none bg-transparent font-medium opacity-30 focus:opacity-100" placeholder="Type here..." value={masterLibrary[focusedCardId].description} onChange={e => updateCard(focusedCardId, {description: e.target.value})} />
+                                            <textarea className="w-full mt-10 h-64 border-t pt-10 text-slate-400 text-base outline-none resize-none bg-transparent font-medium opacity-20 focus:opacity-100 transition-opacity" placeholder="Edit Card Notes..." value={masterLibrary[focusedCardId].description} onChange={e => updateCard(focusedCardId, {description: e.target.value})} />
+                                        </div>
+                                    </div>
+
+                                    {/* Right: Restored Linker Palette */}
+                                    <div className="linker-sidebar flex flex-col p-6 shrink-0">
+                                        <h4 className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">Tag Library</h4>
+                                        <input className="w-full bg-white border rounded-xl p-3 text-xs font-bold mb-4 outline-none shadow-sm" placeholder="Find tag..." value={linkerSearch} onChange={e => setLinkerSearch(e.target.value)} />
+                                        <div className="flex-1 overflow-y-auto">
+                                            {Object.values(masterLibrary).filter(c => c.header.toLowerCase().includes(linkerSearch.toLowerCase()) && c.id !== focusedCardId).map(c => (
+                                                <div key={c.id} onClick={() => updateCard(focusedCardId, { description: (masterLibrary[focusedCardId].description || "") + ` [[Card:${c.header}]]` })} className="linker-item">📄 {c.header}</div>
+                                            ))}
+                                            {stacks.filter(s => s.name.toLowerCase().includes(linkerSearch.toLowerCase())).map(s => (
+                                                <div key={s.id} onClick={() => updateCard(focusedCardId, { description: (masterLibrary[focusedCardId].description || "") + ` [[Stack:${s.name.replace('sweep_stack_','').replace('.json','') }]]` })} className="linker-item !text-emerald-600 italic">📂 Collection link</div>
+                                            ))}
                                         </div>
                                     </div>
                                 </div>
@@ -299,16 +332,25 @@
                         </div>
                     )}
 
+                    {/* DRAWER: COLLECTION NOTEBOOK */}
+                    <div className={`fixed top-0 right-0 h-full w-80 md:w-96 bg-slate-900 text-white z-[5001] drawer-transition p-8 flex flex-col shadow-[-20px_0_50px_rgba(0,0,0,0.3)] ${isNotepadOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+                        <div className="flex justify-between items-center mb-10 shrink-0">
+                            <h2 className="text-xs font-black text-indigo-400 uppercase tracking-widest italic">Collection Brain</h2>
+                            <button onClick={() => setIsNotepadOpen(false)} className="text-slate-500 hover:text-white font-bold text-2xl transition-all">×</button>
+                        </div>
+                        <textarea className="flex-1 w-full bg-slate-800 p-6 rounded-3xl text-sm font-medium outline-none border-none resize-none leading-relaxed text-slate-200 shadow-inner" placeholder="Jot down high-level collection notes here..." value={activeStack?.notes || ""} onChange={(e) => { const us = { ...activeStack, notes: e.target.value }; setActiveStack(us); saveStackFile(us.id, us.cardIds, e.target.value); }} />
+                    </div>
+
                     <nav className="flex justify-between items-center mb-10 bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
                         <div className="flex items-center gap-4">
                             {view !== 'library' && <button onClick={() => setView('library')} className="font-bold text-slate-400 px-2 hover:text-indigo-600 transition-all">←</button>}
                             <div>
-                                <h1 className="text-xl font-black text-indigo-600 uppercase italic truncate max-w-[200px] leading-none">{view === 'library' ? 'Stacks' : activeStack.name.replace('sweep_stack_', '').replace('.json', '')}</h1>
+                                <h1 className="text-xl font-black text-indigo-600 uppercase italic truncate leading-none">{view === 'library' ? 'Stacks' : activeStack.name.replace('sweep_stack_', '').replace('.json', '')}</h1>
                             </div>
                         </div>
                         <div className="flex gap-2">
                             {view === 'library' ? (
-                                <button onClick={() => { const n = prompt("Name:"); if(n) { setIsLoading(true); const m = { name: `sweep_stack_${n}.json`, mimeType: 'application/json' }; const b = new Blob([JSON.stringify({ cardIds: [], notes: "" })], { type: 'application/json' }); const f = new FormData(); f.append('metadata', new Blob([JSON.stringify(m)], { type: 'application/json' })); f.append('file', b); fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: f }).then(() => bootSystem(token)); } }} className="bg-indigo-600 text-white px-8 py-3 rounded-full font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all">+ NEW COLLECTION</button>
+                                <button onClick={() => { const n = prompt("Name:"); if(n) { setIsLoading(true); const m = { name: `sweep_stack_${n}.json`, mimeType: 'application/json' }; const b = new Blob([JSON.stringify({ cardIds: [], notes: "" })], { type: 'application/json' }); const f = new FormData(); f.append('metadata', new Blob([JSON.stringify(m)], { type: 'application/json' })); f.append('file', b); fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: f }).then(() => bootSystem(token)); } }} className="bg-indigo-600 text-white px-8 py-3 rounded-full font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all">+ NEW</button>
                             ) : (
                                 <>
                                     <button onClick={() => setShowBorrowModal(true)} className="bg-emerald-500 text-white px-4 py-3 rounded-xl font-black text-xs uppercase shadow-md transition-all hover:scale-105">Borrow</button>
@@ -319,35 +361,28 @@
                         </div>
                     </nav>
 
-                    {view === 'library' && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                            {stacks.map(s => (
-                                <div key={s.id} onClick={() => openStack(s)} className="bg-white p-12 rounded-[4rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all shadow-sm group relative text-center">
-                                    <div className="w-14 h-14 bg-indigo-50 rounded-2xl mb-4 flex items-center justify-center text-indigo-600 font-black mx-auto shadow-inner">S</div>
-                                    <h3 className="font-black text-slate-700 text-xl uppercase truncate leading-none mb-2">{s.name.replace('sweep_stack_', '').replace('.json', '')}</h3>
-                                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{s.count} Items</p>
-                                    <button onClick={(e) => {e.stopPropagation(); if(confirm('Delete?')) { setIsLoading(true); gapi.client.drive.files.delete({ fileId: s.id }).then(() => refreshStacks(token).then(() => setIsLoading(false))); } }} className="absolute top-8 right-8 text-slate-200 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity font-black text-xl">×</button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-
+                    {/* EDIT GRID WITH LOCAL SEARCH */}
                     {view === 'edit' && activeStack && (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4 pb-40">
-                            {activeStack.cardIds.map(cid => {
-                                const card = masterLibrary[cid]; if(!card) return null;
-                                return (
-                                    <div key={cid} onClick={() => setFocusedCardId(cid)} className={`bg-white rounded-2xl border-2 cursor-pointer transition-all p-4 shadow-sm flex flex-col h-[280px] group ${focusedCardId === cid ? 'border-indigo-500 scale-95 shadow-xl' : 'border-transparent hover:border-indigo-100'}`}>
-                                        <div className="aspect-video bg-slate-900 rounded-xl overflow-hidden mb-3">
-                                            {card.media?.[0] && <MediaViewer item={card.media[0]} className="w-full h-full object-contain opacity-80" autoPlay={false} />}
+                        <React.Fragment>
+                            <div className="mb-6 flex justify-center">
+                                <input className="w-full max-w-md bg-white border rounded-full px-6 py-3 font-bold text-sm outline-none focus:ring-4 ring-indigo-50" placeholder="🔍 Search this stack..." value={localFilter} onChange={e => setLocalFilter(e.target.value)} />
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4 pb-40">
+                                {filteredEditGrid.map(cid => {
+                                    const card = masterLibrary[cid]; if(!card) return null;
+                                    return (
+                                        <div key={cid} onClick={() => setFocusedCardId(cid)} className={`bg-white rounded-2xl border-2 cursor-pointer transition-all p-4 shadow-sm flex flex-col h-[280px] group ${focusedCardId === cid ? 'border-indigo-500 scale-95 shadow-xl' : 'border-transparent hover:border-indigo-100'}`}>
+                                            <div className="aspect-video bg-slate-900 rounded-xl overflow-hidden mb-3">
+                                                {card.media?.[0] && <MediaViewer item={card.media[0]} className="w-full h-full object-contain opacity-80" autoPlay={false} />}
+                                            </div>
+                                            <h4 className="font-black text-[10px] uppercase truncate mb-1 text-slate-700 leading-none">{card.header || "Untitled"}</h4>
+                                            <p className="text-[9px] text-slate-400 font-medium line-clamp-2 leading-tight overflow-hidden">{card.description || "..."}</p>
+                                            <div className="mt-auto pt-3 border-t flex justify-end"><button onClick={(e) => {e.stopPropagation(); removeCard(cid);}} className="text-[8px] font-black text-rose-300 hover:text-rose-500 uppercase">Remove</button></div>
                                         </div>
-                                        <h4 className="font-black text-[10px] uppercase truncate mb-1 text-slate-700 leading-none">{card.header || "Untitled"}</h4>
-                                        <p className="text-[9px] text-slate-400 font-medium line-clamp-2 leading-tight overflow-hidden">{card.description || "..."}</p>
-                                        <div className="mt-auto pt-3 border-t flex justify-end"><button onClick={(e) => {e.stopPropagation(); removeCard(cid);}} className="text-[8px] font-black text-rose-300 hover:text-rose-500 uppercase transition-colors">Remove</button></div>
-                                    </div>
-                                )
-                            })}
-                        </div>
+                                    )
+                                })}
+                            </div>
+                        </React.Fragment>
                     )}
 
                     {view === 'review' && (
@@ -356,39 +391,30 @@
                                 {[0, 1, 2].map(i => {
                                     const cid = reviewRows[currentRow]?.[i]; const card = masterLibrary[cid];
                                     const isEditing = editingNoteId === cid;
-                                    const mediaIdx = mediaIndices[cid] || 0;
-                                    const cardMedia = getExtendedMedia(cid);
-
+                                    const cardRefs = getBacklinks(cid);
                                     return (
                                         <div key={i} className="flex flex-col gap-3">
                                             <div className="text-center font-black text-indigo-200 text-[10px] tracking-widest uppercase italic leading-none">Slot {String.fromCharCode(65+i)}</div>
-                                            <div className={`rounded-[3rem] border-2 p-8 h-[550px] flex flex-col transition-all duration-300 ${card ? 'bg-white shadow-xl border-white hover:border-indigo-50' : 'bg-slate-100 border-dashed border-slate-200'}`}>
+                                            <div className={`rounded-[3rem] border-2 p-8 h-[550px] flex flex-col transition-all duration-300 ${card ? 'bg-white shadow-xl border-white hover:border-indigo-50' : 'bg-slate-100 border-dashed border-slate-200 flex items-center justify-center'}`}>
                                                 {card && (
                                                     <div className="h-full flex flex-col overflow-hidden relative">
-                                                        <h2 onClick={() => setFocusedCardId(cid)} className="text-xl font-black mb-4 leading-none hover:text-indigo-600 transition-colors cursor-pointer truncate uppercase tracking-tighter shrink-0">{card.header || "Untitled"}</h2>
-                                                        <div className="relative bg-black rounded-3xl overflow-hidden mb-6 aspect-video flex items-center justify-center shadow-xl shrink-0 group">
-                                                            <div className="w-full h-full cursor-zoom-in" onClick={() => setZoomUrl(cardMedia[mediaIdx]?.url)}><MediaViewer item={cardMedia[mediaIdx]} className="w-full h-full object-contain" /></div>
-                                                            {cardMedia.length > 1 && (
-                                                                <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 flex justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-                                                                    <button onClick={(e) => {e.stopPropagation(); setMediaIndices(prev => ({...prev, [cid]: (mediaIdx - 1 + cardMedia.length) % cardMedia.length}))}} className="bg-white/20 hover:bg-white/40 text-white w-8 h-8 rounded-full font-black">←</button>
-                                                                    <button onClick={(e) => {e.stopPropagation(); setMediaIndices(prev => ({...prev, [cid]: (mediaIdx + 1) % cardMedia.length}))}} className="bg-white/20 hover:bg-white/40 text-white w-8 h-8 rounded-full font-black">→</button>
-                                                                </div>
-                                                            )}
-                                                            <div className="absolute bottom-2 right-2 bg-black/40 text-white text-[7px] font-black px-2 py-1 rounded-lg">{mediaIdx + 1}/{cardMedia.length}</div>
+                                                        <div className="flex justify-between items-center mb-4">
+                                                            <h2 onClick={() => setFocusedCardId(cid)} className="text-xl font-black leading-none hover:text-indigo-600 transition-colors cursor-pointer truncate flex-1 uppercase tracking-tighter">{card.header || "Untitled"}</h2>
+                                                            <div className="text-[8px] font-black text-indigo-300 bg-indigo-50 px-2 py-1 rounded-full shrink-0 uppercase">{cardRefs.length} Ref</div>
                                                         </div>
+                                                        {card.media?.[0] && <div className="bg-black rounded-3xl overflow-hidden mb-6 aspect-video flex items-center justify-center cursor-zoom-in shrink-0 relative" onClick={() => setZoomUrl(card.media[0].url)}><MediaViewer item={card.media[0]} className="w-full h-full object-contain" /></div>}
                                                         <div className="flex-1 overflow-y-auto flex flex-col relative" onMouseDown={(e) => { if (!e.target.closest('.wiki-link')) { e.stopPropagation(); setEditingNoteId(cid); } }}>
                                                             {isEditing ? (
                                                                 <div className="flex-1 flex flex-col h-full bg-white">
-                                                                    <textarea autoFocus className="w-full flex-1 text-slate-600 text-sm outline-none resize-none bg-slate-50 p-3 rounded-xl font-medium leading-relaxed mb-2" value={card.description} 
-                                                                        onChange={e => updateCard(cid, {description: e.target.value})} />
+                                                                    <textarea autoFocus className="w-full flex-1 text-slate-600 text-sm outline-none resize-none bg-slate-50 p-3 rounded-xl font-medium leading-relaxed mb-2 shadow-inner" value={card.description} onChange={e => updateCard(cid, {description: e.target.value})} />
                                                                     <div className="review-linker-overlay flex flex-col" onMouseDown={e => e.stopPropagation()}>
-                                                                        <input className="bg-slate-100 rounded-lg p-2 text-[10px] font-bold outline-none border-none mb-2 w-full shadow-inner" placeholder="Link card..." value={linkerSearch} onChange={e => setLinkerSearch(e.target.value)} />
-                                                                        {linkerSearch && <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                                                                            {Object.values(masterLibrary).filter(x => x.header.toLowerCase().includes(linkerSearch.toLowerCase()) && x.id !== cid).slice(0,5).map(x => (
-                                                                                <button key={x.id} onMouseDown={() => updateCard(cid, { description: (masterLibrary[cid].description || "") + ` [[Card:${x.header}]]` })} className="bg-indigo-50 text-indigo-600 text-[9px] font-black px-2 py-1 rounded border border-indigo-100 transition-colors hover:bg-indigo-600 hover:text-white">📄 {x.header}</button>
+                                                                        <input className="bg-slate-100 rounded-lg p-2 text-[11px] font-bold outline-none border-none mb-2 w-full" placeholder="Link card..." value={reviewLinkerSearch} onChange={e => setReviewLinkerSearch(e.target.value)} />
+                                                                        {reviewLinkerSearch && <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto">
+                                                                            {Object.values(masterLibrary).filter(x => x.header.toLowerCase().includes(reviewLinkerSearch.toLowerCase()) && x.id !== cid).slice(0,5).map(x => (
+                                                                                <button key={x.id} onMouseDown={() => updateCard(cid, { description: (masterLibrary[cid].description || "") + ` [[Card:${x.header}]]` })} className="bg-indigo-50 text-indigo-600 text-[10px] font-black px-2 py-1 rounded border hover:bg-indigo-600 hover:text-white transition-colors">📄 {x.header}</button>
                                                                             ))}
                                                                         </div>}
-                                                                        <button onMouseDown={() => { setEditingNoteId(null); setLinkerSearch(''); }} className="mt-2 text-[8px] font-black text-slate-400 uppercase tracking-widest text-center transition-all hover:text-indigo-600">Done Editing</button>
+                                                                        <button onMouseDown={() => { setEditingNoteId(null); setReviewLinkerSearch(''); }} className="mt-2 text-[8px] font-black text-slate-400 uppercase tracking-widest text-center border-t pt-2">Done</button>
                                                                     </div>
                                                                 </div>
                                                             ) : (
@@ -400,8 +426,8 @@
                                             </div>
                                             {card && (
                                                 <div className="flex justify-center gap-2">
-                                                    <button disabled={i===0} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i-1]] = [r[i-1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-5 py-2 rounded-xl shadow-sm font-black text-[9px] disabled:opacity-20 active:scale-95 border uppercase transition-all">← SWAP</button>
-                                                    <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i+1]] = [r[i+1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-5 py-2 rounded-xl shadow-sm font-black text-[9px] disabled:opacity-20 active:scale-95 border uppercase transition-all">SWAP →</button>
+                                                    <button disabled={i===0} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i-1]] = [r[i-1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-5 py-2 rounded-xl shadow-sm font-black text-[9px] disabled:opacity-20 border uppercase transition-all">←</button>
+                                                    <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i+1]] = [r[i+1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-5 py-2 rounded-xl shadow-sm font-black text-[9px] disabled:opacity-20 border uppercase transition-all">→</button>
                                                 </div>
                                             )}
                                         </div>
@@ -442,26 +468,4 @@
                                         const isSel = borrowSelection.includes(card.id);
                                         const inStack = activeStack.cardIds.includes(card.id);
                                         return (
-                                            <div key={card.id} onClick={() => !inStack && setBorrowSelection(s => isSel ? s.filter(x => x!==card.id) : [...s, card.id])} className={`bg-slate-50 border-2 p-5 rounded-3xl flex flex-col gap-3 group cursor-pointer transition-all ${isSel ? 'border-indigo-600 ring-4 ring-indigo-50 shadow-xl scale-[1.02]' : 'border-transparent'} ${inStack ? 'opacity-30 grayscale cursor-not-allowed' : 'hover:border-indigo-200'}`}>
-                                                <h4 className="font-black text-slate-800 text-[10px] uppercase truncate leading-none">{card.header || "Untitled"}</h4>
-                                                <div className="bg-slate-200 aspect-video rounded-2xl overflow-hidden shadow-inner">
-                                                    {card.media?.[0] && <MediaViewer item={card.media[0]} className="w-full h-full object-cover grayscale opacity-50 group-hover:grayscale-0 transition-all duration-500" autoPlay={false} />}
-                                                </div>
-                                                <div className="text-[8px] font-black text-center uppercase tracking-widest">{inStack ? 'IN STACK' : isSel ? 'SELECTED' : 'ADD'}</div>
-                                            </div>
-                                        )
-                                    })}
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
-                </AppContext.Provider>
-            );
-        };
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+                                            <div key={card.id} onClick={() => !inStack && setBorrowSelection(s => isSel ? s.filter(x => x!==card.id) : [...s, card.id
