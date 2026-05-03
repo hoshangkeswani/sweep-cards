@@ -106,11 +106,16 @@
             };
 
             const handleLogin = async () => {
-                await supabaseClient.auth.signInWithOAuth({ 
-                    provider: 'google',
-                    options: { redirectTo: window.location.href }
-                });
-            };
+    const { data, error } = await supabaseClient.auth.signInWithOAuth({ 
+        provider: 'google',
+        options: { 
+            // This ensures Supabase returns to your GitHub page, not localhost
+            redirectTo: window.location.href 
+        }
+    });
+    if (error) alert(error.message);
+};
+
 
             const handleLogout = async () => {
                 await supabaseClient.auth.signOut();
