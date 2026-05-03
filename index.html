@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro | Master Studio v14.9.4</title>
+    <title>Sweep Sync Pro | Master Studio v14.9.5</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -16,8 +16,8 @@
         .pulse-ring { animation: pulse 2s infinite; }
         @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
         .wiki-link { cursor: pointer; color: #4f46e5; font-weight: 800; text-decoration: underline; background: #f5f3ff; padding: 2px 8px; border-radius: 8px; font-size: 0.85em; }
-        ::-webkit-scrollbar { width: 5px; }
-        ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
     </style>
 </head>
 <body>
@@ -66,7 +66,7 @@
 
             const boot = async () => {
                 setPulse('syncing');
-                const { data: cards } = await _db.from('cards').select('*');
+                const { data: cards } = await _db.from('cards').select('*, media(*)');
                 const { data: stacksData } = await _db.from('stacks').select('*').order('created_at', { ascending: false });
                 const lib = {};
                 cards?.forEach(c => lib[c.id] = c);
@@ -75,39 +75,52 @@
                 setPulse('online');
             };
 
+            const handleLogout = async () => {
+                await _db.auth.signOut();
+                window.location.reload();
+            };
+
             const openStack = async (s) => {
                 setPulse('syncing');
                 const { data: items } = await _db.from('stack_items').select('card_id').eq('stack_id', s.id).order('position');
-                setActiveStack({ ...s, card_ids: (items || []).map(i => i.card_id) });
+                setActiveStack({ ...s, card_ids: (items || []).map(i => i.card_id).filter(id => masterLibrary[id]) });
                 setView('studio');
                 setPulse('online');
             };
 
-            // FEATURE: NODE INJECTION (Create Card & Link to Stack)
-            const addCardToStack = async () => {
-                const header = prompt("New Card Title:");
-                if (!header) return;
+            // FEATURE: THE SWEEP ENGINE (Re-ordering)
+            const moveInStack = (index, direction) => {
+                const newIds = [...activeStack.card_ids];
+                const target = index + direction;
+                if (target < 0 || target >= newIds.length) return;
+                [newIds[index], newIds[target]] = [newIds[target], newIds[index]];
+                setActiveStack({...activeStack, card_ids: newIds});
+            };
 
+            const harvestSweep = async () => {
                 setPulse('syncing');
-                // 1. Create Atomic Card
-                const { data: newCard, error: cErr } = await _db.from('cards')
-                    .insert([{ header, user_id: user.id }]).select().single();
-                
-                if (cErr) { alert(cErr.message); setPulse('error'); return; }
+                const updates = activeStack.card_ids.map((id, index) => ({
+                    stack_id: activeStack.id,
+                    card_id: id,
+                    position: index
+                }));
+                await _db.from('stack_items').delete().eq('stack_id', activeStack.id);
+                await _db.from('stack_items').insert(updates);
+                setPulse('online');
+                alert("Sweep Harvested: New Vertical Sequence Persisted.");
+            };
 
-                // 2. Create Relational Link (Stack Item)
-                const { error: sErr } = await _db.from('stack_items')
-                    .insert([{ 
-                        stack_id: activeStack.id, 
-                        card_id: newCard.id, 
-                        position: activeStack.card_ids.length 
-                    }]);
-
-                if (sErr) { alert(sErr.message); setPulse('error'); return; }
-
-                // 3. Update State
-                setMasterLibrary({ ...masterLibrary, [newCard.id]: newCard });
-                setActiveStack({ ...activeStack, card_ids: [...activeStack.card_ids, newCard.id] });
+            // FEATURE: MULTIMEDIA PERSISTENCE
+            const addMediaToCard = async (cardId) => {
+                const url = prompt("Enter Image URL:");
+                if (!url) return;
+                setPulse('syncing');
+                const { data, error } = await _db.from('media').insert([{ card_id: cardId, url: url, type: 'image' }]).select().single();
+                if (!error) {
+                    const newLib = {...masterLibrary};
+                    newLib[cardId].media = [...(newLib[cardId].media || []), data];
+                    setMasterLibrary(newLib);
+                }
                 setPulse('online');
             };
 
@@ -122,7 +135,7 @@
                     {/* PULSE HUD */}
                     <div className="fixed bottom-10 right-10 z-[999] flex items-center gap-4 glass p-4 rounded-3xl shadow-2xl border-2 border-white">
                         <div className="text-right">
-                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Studio Pulse</p>
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Pulse</p>
                             <p className="text-xs font-bold text-slate-800 uppercase">{pulse}</p>
                         </div>
                         <div className={`w-4 h-4 rounded-full ${pulse === 'online' ? 'bg-emerald-500 pulse-ring' : pulse === 'syncing' ? 'bg-indigo-500 animate-ping' : 'bg-rose-500'}`}></div>
@@ -133,7 +146,10 @@
                             <header className="flex justify-between items-end mb-20">
                                 <div>
                                     <h1 className="text-8xl font-black italic tracking-tighter text-indigo-600 leading-none">THE VAULT</h1>
-                                    <p className="mt-4 text-slate-400 font-bold uppercase text-[11px] tracking-[0.3em]">Identity Linked: {user.email}</p>
+                                    <div className="flex items-center gap-6 mt-4">
+                                        <p className="text-slate-400 font-bold uppercase text-[11px] tracking-[0.3em]">{user.email}</p>
+                                        <button onClick={handleLogout} className="text-rose-500 font-black text-[10px] uppercase border-b-2 border-rose-100 hover:border-rose-500 transition-all pb-1">Logout</button>
+                                    </div>
                                 </div>
                                 <button onClick={() => {
                                     const name = prompt("Stack Name:");
@@ -143,10 +159,9 @@
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
                                 {stacks.map(s => (
-                                    <div key={s.id} onClick={() => openStack(s)} className="bg-white p-14 rounded-[4rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all hover:-translate-y-2 shadow-sm group relative">
+                                    <div key={s.id} onClick={() => openStack(s)} className="bg-white p-14 rounded-[4rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all hover:-translate-y-2 shadow-sm group">
                                         <div className="w-12 h-12 bg-indigo-50 rounded-2xl mb-6 flex items-center justify-center font-black text-indigo-600">S</div>
                                         <h2 className="text-2xl font-black uppercase tracking-tight text-slate-800">{s.name}</h2>
-                                        <p className="text-[10px] font-bold text-slate-300 mt-2">UUID: {s.id.slice(0,8)}</p>
                                     </div>
                                 ))}
                             </div>
@@ -156,19 +171,32 @@
                     {view === 'studio' && (
                         <div className="max-w-7xl mx-auto animate-in fade-in duration-500">
                             <nav className="flex justify-between items-center mb-16 glass p-8 rounded-[3rem] sticky top-10 z-[50]">
-                                <button onClick={() => setView('vault')} className="text-xs font-black uppercase text-slate-400 hover:text-indigo-600 transition-all">← Exit to Vault</button>
+                                <button onClick={() => setView('vault')} className="text-xs font-black uppercase text-slate-400 hover:text-indigo-600">← Vault</button>
                                 <h2 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900">{activeStack.name}</h2>
-                                <button onClick={addCardToStack} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase shadow-lg hover:scale-105 transition-all">+ Add Card</button>
+                                <button onClick={harvestSweep} className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase shadow-lg hover:scale-105 transition-all">Harvest Sweep</button>
                             </nav>
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                                {[0, 1, 2].map(col => (
+                                {['Slot A', 'Slot B', 'Slot C'].map((label, col) => (
                                     <div key={col} className="space-y-6">
-                                        <div className="px-8 mb-4 text-[10px] font-black uppercase text-slate-300 tracking-widest">Column {String.fromCharCode(65 + col)}</div>
-                                        {activeStack.card_ids.filter((_, i) => i % 3 === col).map(id => (
-                                            <div key={id} onClick={() => setFocusCardId(id)} className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm hover:border-indigo-200 cursor-pointer transition-all hover:-translate-y-1">
-                                                <h3 className="font-black uppercase text-sm mb-4 tracking-tight text-slate-800">{masterLibrary[id]?.header}</h3>
-                                                <NoteRenderer text={masterLibrary[id]?.notes?.slice(0, 100)} library={masterLibrary} onJump={(targetId) => setFocusCardId(targetId)} />
+                                        <div className="px-8 text-[10px] font-black uppercase text-slate-300 tracking-widest">{label}</div>
+                                        {activeStack.card_ids.filter((_, i) => i % 3 === col).map((id, i) => (
+                                            <div key={id} className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm relative group hover:border-indigo-200">
+                                                <div className="flex justify-between items-center mb-4">
+                                                    <h3 className="font-black uppercase text-sm tracking-tight text-slate-800">{masterLibrary[id]?.header}</h3>
+                                                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                                                        <button onClick={() => moveInStack(activeStack.card_ids.indexOf(id), -1)} className="text-slate-300 hover:text-indigo-600">←</button>
+                                                        <button onClick={() => moveInStack(activeStack.card_ids.indexOf(id), 1)} className="text-slate-300 hover:text-indigo-600">→</button>
+                                                    </div>
+                                                </div>
+                                                <div className="mb-4 flex gap-2 overflow-x-auto no-scrollbar">
+                                                    {masterLibrary[id]?.media?.map((m, idx) => (
+                                                        <img key={idx} src={m.url} className="w-16 h-16 rounded-xl object-cover bg-slate-100" />
+                                                    ))}
+                                                </div>
+                                                <div onClick={() => setFocusCardId(id)} className="cursor-pointer">
+                                                    <NoteRenderer text={masterLibrary[id]?.notes?.slice(0, 100)} library={masterLibrary} onJump={(tid) => setFocusCardId(tid)} />
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -177,7 +205,6 @@
                         </div>
                     )}
 
-                    {/* FOCUS EDITOR MODAL */}
                     {focusCardId && (
                         <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
                             <div className="bg-white w-[90vw] h-[85vh] rounded-[4rem] overflow-hidden flex flex-col md:flex-row shadow-2xl animate-in zoom-in-95">
@@ -193,7 +220,7 @@
                                         }}
                                     />
                                     <textarea 
-                                        className="w-full h-full min-h-[400px] outline-none text-slate-600 leading-relaxed text-lg resize-none"
+                                        className="w-full h-full min-h-[300px] outline-none text-slate-600 leading-relaxed text-lg resize-none mb-20"
                                         placeholder="Start typing..."
                                         value={masterLibrary[focusCardId].notes}
                                         onChange={(e) => {
@@ -202,6 +229,17 @@
                                             _db.from('cards').update({notes: val}).eq('id', focusCardId);
                                         }}
                                     />
+                                </div>
+                                <div className="w-full md:w-[400px] bg-slate-50 p-12 border-l border-slate-100 overflow-y-auto">
+                                    <h4 className="text-[10px] font-black uppercase text-slate-400 mb-8 tracking-widest">Multimedia Sidebar</h4>
+                                    <button onClick={() => addMediaToCard(focusCardId)} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-2xl text-[10px] font-black uppercase text-slate-400 hover:border-indigo-400 hover:text-indigo-400 mb-8 transition-all">+ Add Image URL</button>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        {masterLibrary[focusCardId].media?.map((m, idx) => (
+                                            <div key={idx} className="aspect-square rounded-2xl overflow-hidden bg-white shadow-sm border border-white">
+                                                <img src={m.url} className="w-full h-full object-cover" />
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             </div>
                         </div>
