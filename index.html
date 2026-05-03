@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro | Master Studio v14.9.5</title>
+    <title>Sweep Sync Pro | Master Studio v14.9.6</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -16,8 +16,8 @@
         .pulse-ring { animation: pulse 2s infinite; }
         @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
         .wiki-link { cursor: pointer; color: #4f46e5; font-weight: 800; text-decoration: underline; background: #f5f3ff; padding: 2px 8px; border-radius: 8px; font-size: 0.85em; }
-        ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .media-scroll { scroll-snap-type: x mandatory; }
+        .media-item { scroll-snap-align: start; }
     </style>
 </head>
 <body>
@@ -26,6 +26,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
+        // --- CORE ECOLOGY ---
         const SUPABASE_URL = 'https://jslelyvziimqimmaxvlk.supabase.co';
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzbGVseXZ6aWltcWltbWF4dmxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3ODUzNTksImV4cCI6MjA5MzM2MTM1OX0.DdDfRZcgfNu7fFZi0uHMSBi-TUNvYVEuHMwiPHdJIa4'; // ENTER KEY
         const _db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -75,9 +76,19 @@
                 setPulse('online');
             };
 
+            // FEATURE A: LOGOUT PROTOCOL
             const handleLogout = async () => {
                 await _db.auth.signOut();
                 window.location.reload();
+            };
+
+            // INFRASTRUCTURE FIX: GitHub Pages Aware Redirect
+            const handleLogin = async () => {
+                const siteUrl = window.location.origin + window.location.pathname;
+                await _db.auth.signInWithOAuth({
+                    provider: 'google',
+                    options: { redirectTo: siteUrl }
+                });
             };
 
             const openStack = async (s) => {
@@ -88,7 +99,7 @@
                 setPulse('online');
             };
 
-            // FEATURE: THE SWEEP ENGINE (Re-ordering)
+            // FEATURE C: SWEEP ENGINE
             const moveInStack = (index, direction) => {
                 const newIds = [...activeStack.card_ids];
                 const target = index + direction;
@@ -107,26 +118,14 @@
                 await _db.from('stack_items').delete().eq('stack_id', activeStack.id);
                 await _db.from('stack_items').insert(updates);
                 setPulse('online');
-                alert("Sweep Harvested: New Vertical Sequence Persisted.");
-            };
-
-            // FEATURE: MULTIMEDIA PERSISTENCE
-            const addMediaToCard = async (cardId) => {
-                const url = prompt("Enter Image URL:");
-                if (!url) return;
-                setPulse('syncing');
-                const { data, error } = await _db.from('media').insert([{ card_id: cardId, url: url, type: 'image' }]).select().single();
-                if (!error) {
-                    const newLib = {...masterLibrary};
-                    newLib[cardId].media = [...(newLib[cardId].media || []), data];
-                    setMasterLibrary(newLib);
-                }
-                setPulse('online');
+                alert("Triple-Column Sweep Harvested & Saved.");
             };
 
             if (!user) return (
-                <div className="h-screen flex items-center justify-center bg-slate-950">
-                    <button onClick={() => _db.auth.signInWithOAuth({ provider: 'google' })} className="bg-white px-12 py-5 rounded-full font-black uppercase text-xs tracking-widest hover:scale-105 transition-all">Sign In to Vault</button>
+                <div className="h-screen flex items-center justify-center bg-slate-950 text-white flex-col">
+                    <h1 className="text-4xl font-black italic mb-8 tracking-tighter">SWEEP SYNC STUDIO</h1>
+                    <button onClick={handleLogin} className="bg-white text-slate-950 px-12 py-5 rounded-full font-black uppercase text-xs tracking-widest shadow-2xl hover:scale-105 transition-all">Sign In with Google</button>
+                    <p className="mt-6 text-slate-500 text-[10px] uppercase font-bold tracking-widest">v14.9.6 Production</p>
                 </div>
             );
 
@@ -146,9 +145,9 @@
                             <header className="flex justify-between items-end mb-20">
                                 <div>
                                     <h1 className="text-8xl font-black italic tracking-tighter text-indigo-600 leading-none">THE VAULT</h1>
-                                    <div className="flex items-center gap-6 mt-4">
-                                        <p className="text-slate-400 font-bold uppercase text-[11px] tracking-[0.3em]">{user.email}</p>
-                                        <button onClick={handleLogout} className="text-rose-500 font-black text-[10px] uppercase border-b-2 border-rose-100 hover:border-rose-500 transition-all pb-1">Logout</button>
+                                    <div className="flex gap-4 mt-4">
+                                        <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest">{user.email}</p>
+                                        <button onClick={handleLogout} className="text-rose-500 font-black text-[10px] uppercase border-b border-rose-200">Logout</button>
                                     </div>
                                 </div>
                                 <button onClick={() => {
@@ -189,9 +188,10 @@
                                                         <button onClick={() => moveInStack(activeStack.card_ids.indexOf(id), 1)} className="text-slate-300 hover:text-indigo-600">→</button>
                                                     </div>
                                                 </div>
+                                                {/* MULTIMEDIA PREVIEW */}
                                                 <div className="mb-4 flex gap-2 overflow-x-auto no-scrollbar">
                                                     {masterLibrary[id]?.media?.map((m, idx) => (
-                                                        <img key={idx} src={m.url} className="w-16 h-16 rounded-xl object-cover bg-slate-100" />
+                                                        <img key={idx} src={m.url} className="w-16 h-16 rounded-xl object-cover bg-slate-50 border border-slate-100" />
                                                     ))}
                                                 </div>
                                                 <div onClick={() => setFocusCardId(id)} className="cursor-pointer">
@@ -204,7 +204,8 @@
                             </div>
                         </div>
                     )}
-
+                    
+                    {/* FOCUS EDITOR LOGIC INTACT PER ECOLOGY */}
                     {focusCardId && (
                         <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
                             <div className="bg-white w-[90vw] h-[85vh] rounded-[4rem] overflow-hidden flex flex-col md:flex-row shadow-2xl animate-in zoom-in-95">
@@ -221,7 +222,6 @@
                                     />
                                     <textarea 
                                         className="w-full h-full min-h-[300px] outline-none text-slate-600 leading-relaxed text-lg resize-none mb-20"
-                                        placeholder="Start typing..."
                                         value={masterLibrary[focusCardId].notes}
                                         onChange={(e) => {
                                             const val = e.target.value;
@@ -231,11 +231,19 @@
                                     />
                                 </div>
                                 <div className="w-full md:w-[400px] bg-slate-50 p-12 border-l border-slate-100 overflow-y-auto">
-                                    <h4 className="text-[10px] font-black uppercase text-slate-400 mb-8 tracking-widest">Multimedia Sidebar</h4>
-                                    <button onClick={() => addMediaToCard(focusCardId)} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-2xl text-[10px] font-black uppercase text-slate-400 hover:border-indigo-400 hover:text-indigo-400 mb-8 transition-all">+ Add Image URL</button>
+                                    <h4 className="text-[10px] font-black uppercase text-slate-400 mb-8 tracking-widest">Multimedia Harvest</h4>
+                                    <button onClick={async () => {
+                                        const url = prompt("Image URL:");
+                                        if(url) {
+                                            const { data } = await _db.from('media').insert([{card_id: focusCardId, url: url, type: 'image'}]).select().single();
+                                            const newLib = {...masterLibrary};
+                                            newLib[focusCardId].media = [...(newLib[focusCardId].media || []), data];
+                                            setMasterLibrary(newLib);
+                                        }
+                                    }} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-2xl text-[10px] font-black uppercase text-slate-400 mb-8">+ Add Media</button>
                                     <div className="grid grid-cols-2 gap-4">
                                         {masterLibrary[focusCardId].media?.map((m, idx) => (
-                                            <div key={idx} className="aspect-square rounded-2xl overflow-hidden bg-white shadow-sm border border-white">
+                                            <div key={idx} className="aspect-square rounded-2xl overflow-hidden bg-white shadow-sm">
                                                 <img src={m.url} className="w-full h-full object-cover" />
                                             </div>
                                         ))}
