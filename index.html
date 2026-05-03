@@ -3,190 +3,102 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro | Master Studio v14.9.2</title>
+    <title>Sweep Sync Pro | Studio v14.9.3</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap');
-        body { font-family: 'Inter', sans-serif; background: #fcfcfd; color: #1e293b; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; background: #fcfcfd; }
         .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.4); }
         .pulse-ring { animation: pulse 2s infinite; }
         @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
-        .login-bg { background: radial-gradient(circle at top right, #4f46e5, #0f172a); }
-        .wiki-link { cursor: pointer; color: #4f46e5; font-weight: 800; text-decoration: underline; background: #f5f3ff; padding: 2px 8px; border-radius: 8px; font-size: 0.85em; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect } = React;
 
         const SUPABASE_URL = 'https://jslelyvziimqimmaxvlk.supabase.co';
-        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzbGVseXZ6aWltcWltbWF4dmxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3ODUzNTksImV4cCI6MjA5MzM2MTM1OX0.DdDfRZcgfNu7fFZi0uHMSBi-TUNvYVEuHMwiPHdJIa4'; // ENTER YOUR KEY
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzbGVseXZ6aWltcWltbWF4dmxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3ODUzNTksImV4cCI6MjA5MzM2MTM1OX0.DdDfRZcgfNu7fFZi0uHMSBi-TUNvYVEuHMwiPHdJIa4'; // ENTER KEY
         const _db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-        const NoteRenderer = ({ text, library, onJump }) => {
-            if (!text) return <p className="text-slate-300 italic py-4 text-xs uppercase font-bold">Empty Node</p>;
-            const parts = text.split(/(\[\[Card:[^\]]+\]\])/g);
-            return (
-                <div className="whitespace-pre-wrap text-slate-600 leading-relaxed text-sm">
-                    {parts.map((part, i) => {
-                        const match = part.match(/\[\[Card:([^\]|]+)(?:\|([^\]]+))?\]\]/);
-                        if (match) {
-                            const ref = match[1];
-                            const label = match[2];
-                            const target = library[ref] || Object.values(library).find(c => c.header === ref);
-                            return <span key={i} onClick={() => onJump && onJump(target?.id)} className="wiki-link">📄 {label || target?.header || ref}</span>;
-                        }
-                        return part;
-                    })}
-                </div>
-            );
-        };
 
         const App = () => {
             const [user, setUser] = useState(null);
-            const [isLoading, setIsLoading] = useState(true);
             const [pulse, setPulse] = useState('online');
-            const [view, setView] = useState('vault'); 
+            const [view, setView] = useState('vault');
             const [stacks, setStacks] = useState([]);
             const [masterLibrary, setMasterLibrary] = useState({});
-            const [activeStack, setActiveStack] = useState(null);
-            const [focusCardId, setFocusCardId] = useState(null);
 
             useEffect(() => {
                 _db.auth.getSession().then(({ data: { session } }) => {
                     if (session) { setUser(session.user); boot(); }
-                    else { setIsLoading(false); }
                 });
             }, []);
 
             const boot = async () => {
                 setPulse('syncing');
-                try {
-                    const { data: cards } = await _db.from('cards').select('*, media(*)');
-                    const { data: stacksData } = await _db.from('stacks').select('*').order('created_at', { ascending: false });
-                    const lib = {};
-                    cards?.forEach(c => lib[c.id] = c);
-                    setMasterLibrary(lib);
-                    setStacks(stacksData || []);
-                } catch (e) { setPulse('error'); }
-                setIsLoading(false);
+                const { data: cards } = await _db.from('cards').select('*');
+                const { data: stacksData } = await _db.from('stacks').select('*').order('created_at', { ascending: false });
+                const lib = {};
+                cards?.forEach(c => lib[c.id] = c);
+                setMasterLibrary(lib);
+                setStacks(stacksData || []);
                 setPulse('online');
             };
 
-            const handleGoogleLogin = async () => {
-                await _db.auth.signInWithOAuth({
-                    provider: 'google',
-                    options: { redirectTo: window.location.href, queryParams: { prompt: 'select_account' } }
-                });
-            };
-
             const createStack = async () => {
-                const stackName = prompt("Name your new Knowledge Collection:");
-                if (!stackName) return;
+                const name = prompt("Name of Stack:");
+                if (!name || !user) return;
 
                 setPulse('syncing');
+                // The 'user_id' MUST match user.id for RLS to pass
                 const { data, error } = await _db.from('stacks')
-                    .insert([{ 
-                        name: stackName, 
-                        user_id: user.id  // Explicitly mapping the identity
-                    }])
-                    .select().single();
+                    .insert([{ name: name, user_id: user.id }])
+                    .select();
 
                 if (error) {
-                    console.error(error);
                     setPulse('error');
-                    alert(`Vault Refusal: ${error.message}\n\nNote: Ensure you have run the RLS fix in Supabase SQL Editor.`);
+                    alert(`Vault Refusal: ${error.message}`);
                 } else {
-                    setStacks([data, ...stacks]);
+                    setStacks([data[0], ...stacks]);
                     setPulse('online');
                 }
             };
 
-            const openStack = async (s) => {
-                setPulse('syncing');
-                const { data: items } = await _db.from('stack_items').select('card_id').eq('stack_id', s.id).order('position');
-                setActiveStack({ ...s, card_ids: (items || []).map(i => i.card_id).filter(id => masterLibrary[id]) });
-                setView('studio');
-                setPulse('online');
-            };
-
-            if (isLoading) return <div className="h-screen flex items-center justify-center font-black text-xs tracking-widest uppercase">Booting Studio...</div>;
-
             if (!user) return (
-                <div className="h-screen flex items-center justify-center login-bg p-6 text-white text-center">
-                    <div className="max-w-md w-full">
-                        <h1 className="text-6xl font-black italic tracking-tighter mb-4">SWEEP SYNC</h1>
-                        <p className="text-indigo-300 text-[10px] font-bold uppercase tracking-[0.4em] mb-12">Master Studio v14.9.2</p>
-                        <button onClick={handleGoogleLogin} className="w-full bg-white text-slate-900 py-6 rounded-3xl font-black uppercase text-xs tracking-widest shadow-2xl hover:scale-105 transition-all">
-                            Authenticate via Google
-                        </button>
-                    </div>
+                <div className="h-screen flex items-center justify-center bg-slate-900">
+                    <button onClick={() => _db.auth.signInWithOAuth({ provider: 'google' })} className="bg-white px-10 py-5 rounded-2xl font-black uppercase text-xs">Login to Vault</button>
                 </div>
             );
 
             return (
-                <div className="p-8 md:p-20 min-h-screen">
-                    {/* PULSE HUD */}
-                    <div className="fixed bottom-10 right-10 z-[9999] flex items-center gap-4 glass p-4 rounded-3xl border-2 border-white shadow-2xl">
+                <div className="p-10 md:p-20">
+                    <div className="fixed bottom-10 right-10 z-[999] flex items-center gap-4 glass p-4 rounded-3xl shadow-2xl">
                         <div className="text-right">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Heartbeat</p>
+                            <p className="text-[10px] font-black text-slate-400 uppercase">Studio Pulse</p>
                             <p className="text-xs font-bold text-slate-800 uppercase">{pulse}</p>
                         </div>
-                        <div className={`w-4 h-4 rounded-full ${pulse === 'online' ? 'bg-emerald-500 pulse-ring' : pulse === 'syncing' ? 'bg-indigo-500 animate-ping' : 'bg-rose-500'}`}></div>
+                        <div className={`w-4 h-4 rounded-full ${pulse === 'online' ? 'bg-emerald-500 pulse-ring' : 'bg-rose-500'}`}></div>
                     </div>
 
-                    {view === 'vault' && (
-                        <div className="max-w-7xl mx-auto">
-                            <header className="flex justify-between items-end mb-20">
-                                <div>
-                                    <h1 className="text-8xl font-black italic tracking-tighter text-indigo-600 leading-none uppercase">Vault</h1>
-                                    <p className="mt-4 text-slate-400 font-bold uppercase text-[11px] tracking-[0.3em]">Identity: {user.email}</p>
-                                </div>
-                                <div className="flex gap-4">
-                                    <button onClick={() => _db.auth.signOut().then(() => window.location.reload())} className="text-slate-400 font-black text-[10px] uppercase mr-6">Logout</button>
-                                    <button onClick={createStack} className="bg-slate-900 text-white px-12 py-5 rounded-full font-black text-xs uppercase shadow-xl hover:bg-indigo-600 transition-all">+ Create Stack</button>
-                                </div>
-                            </header>
+                    <header className="flex justify-between items-end mb-20">
+                        <h1 className="text-8xl font-black italic tracking-tighter text-indigo-600">THE VAULT</h1>
+                        <button onClick={createStack} className="bg-slate-900 text-white px-12 py-5 rounded-full font-black text-xs uppercase">+ NEW STACK</button>
+                    </header>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
-                                {stacks.map(s => (
-                                    <div key={s.id} onClick={() => openStack(s)} className="bg-white p-14 rounded-[4rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all hover:-translate-y-2 shadow-sm group relative">
-                                        <div className="w-12 h-12 bg-indigo-50 rounded-2xl mb-6 flex items-center justify-center font-black text-indigo-600">S</div>
-                                        <h2 className="text-2xl font-black uppercase tracking-tight text-slate-800">{s.name}</h2>
-                                        <button onClick={(e) => { e.stopPropagation(); if(confirm('Delete?')) _db.from('stacks').delete().eq('id', s.id).then(boot); }} className="absolute top-10 right-10 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 font-bold text-xl">×</button>
-                                    </div>
-                                ))}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+                        {stacks.map(s => (
+                            <div key={s.id} className="bg-white p-16 rounded-[4rem] border border-slate-100 shadow-sm relative group">
+                                <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-800">{s.name}</h2>
+                                <button onClick={() => _db.from('stacks').delete().eq('id', s.id).then(boot)} className="absolute top-10 right-10 text-slate-200 hover:text-rose-500 font-bold opacity-0 group-hover:opacity-100 transition-all">Delete</button>
                             </div>
-                        </div>
-                    )}
-
-                    {view === 'studio' && (
-                        <div>
-                            <nav className="flex justify-between items-center mb-16 glass p-8 rounded-[3rem]">
-                                <button onClick={() => setView('vault')} className="text-xs font-black uppercase text-slate-400 hover:text-indigo-600">← Back</button>
-                                <h2 className="text-2xl font-black italic uppercase tracking-tighter">{activeStack.name}</h2>
-                                <div className="w-16"></div>
-                            </nav>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                                {[0, 1, 2].map(col => (
-                                    <div key={col} className="space-y-6">
-                                        {activeStack.card_ids.filter((_, i) => i % 3 === col).map(id => (
-                                            <div key={id} className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
-                                                <h3 className="font-black uppercase text-sm mb-4">{masterLibrary[id]?.header}</h3>
-                                                <NoteRenderer text={masterLibrary[id]?.notes?.slice(0,100)} library={masterLibrary} />
-                                            </div>
-                                        ))}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                        ))}
+                    </div>
                 </div>
             );
         };
