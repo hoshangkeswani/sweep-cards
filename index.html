@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sweep Sync Pro: Master Studio v14</title>
+    <title>Sweep Sync Pro: Master Studio v14.1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -31,11 +31,11 @@
 
         // --- SUPABASE CONFIG ---
         const SUPABASE_URL = 'https://jslelyvziimqimmaxvlk.supabase.co';
-        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzbGVseXZ6aWltcWltbWF4dmxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3ODUzNTksImV4cCI6MjA5MzM2MTM1OX0.DdDfRZcgfNu7fFZi0uHMSBi-TUNvYVEuHMwiPHdJIa4';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzbGVseXZ6aWltcWltbWF4dmxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc3ODUzNTksImV4cCI6MjA5MzM2MTM1OX0.DdDfRZcgfNu7fFZi0uHMSBi-TUNvYVEuHMwiPHdJIa4'; // !!! REPLACE WITH YOUR ACTUAL ANON KEY !!!
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         const MediaViewer = ({ item, className, autoPlay = true }) => {
-            if (!item) return null;
+            if (!item?.url) return null;
             if (item.type === 'video') return <video src={item.url} className={className} loop muted autoPlay={autoPlay} playsInline />;
             return <img src={item.url} className={className} loading="lazy" />;
         };
@@ -50,7 +50,7 @@
                         if (match) {
                             const rawIdOrName = match[1];
                             const pipedLabel = match[2];
-                            const card = Object.values(library).find(c => c.id === rawIdOrName || c.header === rawIdOrName);
+                            const card = Object.values(library || {}).find(c => c.id === rawIdOrName || c.header === rawIdOrName);
                             return (
                                 <span key={i} className="wiki-link" onClick={(e) => { e.stopPropagation(); onJump(card?.id); }}>
                                     📄 {pipedLabel || card?.header || "Unknown"}
@@ -64,21 +64,26 @@
         });
 
         const App = () => {
+            // AUTH & SYSTEM STATE
             const [user, setUser] = useState(null);
             const [isLoading, setIsLoading] = useState(true);
             const [syncStatus, setSyncStatus] = useState('saved');
             const [view, setView] = useState('library'); 
+            
+            // DATA STATE (Initialized as empty to prevent .map() crashes)
             const [masterLibrary, setMasterLibrary] = useState({});
             const [stacks, setStacks] = useState([]);
             const [activeStack, setActiveStack] = useState(null);
             const [focusedCardId, setFocusedCardId] = useState(null);
+            
+            // REVIEW STATE
             const [reviewRows, setReviewRows] = useState([]);
             const [currentRow, setCurrentRow] = useState(0);
             const [mediaIndices, setMediaIndices] = useState({});
             const [zoomUrl, setZoomUrl] = useState(null);
-            const [borrowSearch, setBorrowSearch] = useState('');
+            const [editorSearch, setEditorSearch] = useState('');
 
-            // --- INIT ---
+            // --- BOOT SEQUENCE ---
             useEffect(() => {
                 supabaseClient.auth.getSession().then(({ data: { session } }) => {
                     if (session) {
@@ -94,35 +99,35 @@
                 setIsLoading(true);
                 try {
                     const { data: cards } = await supabaseClient.from('cards').select('*, media(*)');
-                    const { data: stacks } = await supabaseClient.from('stacks').select('*').order('created_at', { ascending: false });
+                    const { data: stacksData } = await supabaseClient.from('stacks').select('*').order('created_at', { ascending: false });
                     
                     const lib = {};
-                    cards?.forEach(c => lib[c.id] = c);
+                    cards?.forEach(c => {
+                        lib[c.id] = { ...c, media: c.media || [] };
+                    });
+                    
                     setMasterLibrary(lib);
-                    setStacks(stacks || []);
+                    setStacks(stacksData || []);
+                } catch (err) {
+                    console.error("Boot Error:", err);
                 } finally {
                     setIsLoading(false);
                 }
             };
 
             const handleLogin = async () => {
-    const { data, error } = await supabaseClient.auth.signInWithOAuth({ 
-        provider: 'google',
-        options: { 
-            // This ensures Supabase returns to your GitHub page, not localhost
-            redirectTo: window.location.href 
-        }
-    });
-    if (error) alert(error.message);
-};
-
+                await supabaseClient.auth.signInWithOAuth({ 
+                    provider: 'google',
+                    options: { redirectTo: window.location.href }
+                });
+            };
 
             const handleLogout = async () => {
                 await supabaseClient.auth.signOut();
                 window.location.reload();
             };
 
-            // --- DATA OPS ---
+            // --- DATA ACTIONS ---
             const updateCard = async (cid, updates) => {
                 setSyncStatus('syncing');
                 setMasterLibrary(prev => ({ ...prev, [cid]: { ...prev[cid], ...updates } }));
@@ -131,11 +136,16 @@
             };
 
             const openStack = async (stack) => {
+                if (!stack) return;
                 setIsLoading(true);
-                const { data: items } = await supabaseClient.from('stack_items').select('card_id').eq('stack_id', stack.id).order('position');
-                setActiveStack({ ...stack, card_ids: items.map(i => i.card_id) });
-                setView('edit');
-                setIsLoading(false);
+                try {
+                    const { data: items } = await supabaseClient.from('stack_items').select('card_id').eq('stack_id', stack.id).order('position');
+                    const ids = (items || []).map(i => i.card_id).filter(id => masterLibrary[id]);
+                    setActiveStack({ ...stack, card_ids: ids });
+                    setView('edit');
+                } finally {
+                    setIsLoading(false);
+                }
             };
 
             const getExtendedMedia = (cid) => {
@@ -155,8 +165,9 @@
                 return [...own, ...linkedMedia];
             };
 
-            // --- SWEEP ENGINE ---
+            // --- SWEEP LOGIC ---
             const enterReview = () => {
+                if (!activeStack?.card_ids?.length) return;
                 const ids = activeStack.card_ids;
                 const rows = [];
                 for (let i = 0; i < ids.length; i += 3) rows.push(ids.slice(i, i + 3));
@@ -188,10 +199,10 @@
 
             if (!user) return (
                 <div className="h-screen flex items-center justify-center bg-slate-900 p-6">
-                    <div className="bg-white p-16 md:p-24 rounded-[4rem] shadow-2xl max-w-sm w-full modal-enter text-center">
+                    <div className="bg-white p-12 md:p-24 rounded-[4rem] shadow-2xl max-w-sm w-full modal-enter text-center">
                         <div className="w-20 h-20 bg-indigo-600 rounded-3xl mx-auto mb-8 flex items-center justify-center text-white text-4xl font-black italic shadow-xl">S</div>
                         <h1 className="text-4xl font-black text-slate-800 mb-2 tracking-tighter uppercase">Studio v14</h1>
-                        <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mb-10">Dedicated Database Persistence</p>
+                        <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mb-10">Database Persistent Ecology</p>
                         <button onClick={handleLogin} className="w-full bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs">Enter Studio</button>
                     </div>
                 </div>
@@ -200,11 +211,11 @@
             return (
                 <div className="max-w-7xl mx-auto p-4 md:p-8 pb-40">
                     
-                    {/* STATUS BAR */}
+                    {/* STUDIO PULSE HUD */}
                     <div className="fixed bottom-6 right-6 z-[8000] flex items-center gap-4 glass px-6 py-3 rounded-2xl shadow-xl border border-white">
                         <div className="text-right">
-                            <p className="text-[8px] font-black uppercase text-slate-400 tracking-widest">Database</p>
-                            <p className="text-[10px] font-bold text-indigo-600">{user.email}</p>
+                            <p className="text-[8px] font-black uppercase text-slate-400 tracking-widest">Pulse</p>
+                            <p className="text-[10px] font-bold text-indigo-600">{user.email.split('@')[0]}</p>
                         </div>
                         <div className={`w-3 h-3 rounded-full ${syncStatus === 'saved' ? 'bg-emerald-500' : 'bg-indigo-500 animate-ping'}`}></div>
                     </div>
@@ -224,24 +235,29 @@
                                     <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mt-3">Active Knowledge Stacks</p>
                                 </div>
                                 <div className="flex gap-4">
-                                    <button onClick={handleLogout} className="text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-rose-500 transition-colors">Sign Out</button>
+                                    <button onClick={handleLogout} className="text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-rose-500 transition-colors">Logout</button>
                                     <button onClick={async () => {
                                         const { data } = await supabaseClient.from('stacks').insert({ user_id: user.id, name: 'New Stack' }).select().single();
-                                        setStacks([data, ...stacks]);
-                                    }} className="bg-indigo-600 text-white px-10 py-4 rounded-full font-black text-xs uppercase shadow-xl hover:scale-105 transition-all">+ CREATE STACK</button>
+                                        if (data) setStacks([data, ...stacks]);
+                                    }} className="bg-indigo-600 text-white px-10 py-4 rounded-full font-black text-xs uppercase shadow-xl">+ NEW STACK</button>
                                 </div>
                             </header>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
-                                {stacks.map(s => (
-                                    <div key={s.id} onClick={() => openStack(s)} className="bg-white p-12 rounded-[4rem] border border-slate-100 hover:border-indigo-400 cursor-pointer transition-all shadow-sm group text-center relative overflow-hidden">
-                                        <div className="w-16 h-16 bg-indigo-50 rounded-3xl mb-6 flex items-center justify-center text-indigo-600 font-black mx-auto text-xl italic shadow-inner">S</div>
-                                        <h3 className="font-black text-slate-800 text-2xl uppercase tracking-tighter leading-none mb-2">{s.name}</h3>
-                                        <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Stack Reference</p>
-                                        <button onClick={(e) => { e.stopPropagation(); if(confirm('Delete stack?')) supabaseClient.from('stacks').delete().eq('id', s.id).then(bootStudio); }} className="absolute top-8 right-8 text-slate-200 hover:text-rose-500 opacity-0 group-hover:opacity-100 font-bold text-xl transition-all">×</button>
-                                    </div>
-                                ))}
-                            </div>
+                            {stacks.length === 0 ? (
+                                <div className="py-20 text-center bg-white rounded-[4rem] border-2 border-dashed border-slate-200">
+                                    <p className="text-slate-400 font-black uppercase tracking-widest text-xs">No stacks in vault.</p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+                                    {stacks.map(s => (
+                                        <div key={s.id} onClick={() => openStack(s)} className="bg-white p-12 rounded-[4rem] border border-slate-100 hover:border-indigo-400 cursor-pointer shadow-sm group text-center relative overflow-hidden transition-all hover:scale-[1.02]">
+                                            <div className="w-16 h-16 bg-indigo-50 rounded-3xl mb-6 flex items-center justify-center text-indigo-600 font-black mx-auto text-xl italic shadow-inner">S</div>
+                                            <h3 className="font-black text-slate-800 text-2xl uppercase tracking-tighter leading-none mb-2">{s.name || "Untitled Stack"}</h3>
+                                            <button onClick={(e) => { e.stopPropagation(); if(confirm('Delete stack?')) supabaseClient.from('stacks').delete().eq('id', s.id).then(bootStudio); }} className="absolute top-8 right-8 text-slate-200 hover:text-rose-500 opacity-0 group-hover:opacity-100 font-bold text-xl">×</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -251,7 +267,7 @@
                             <nav className="flex justify-between items-center glass p-8 rounded-[3rem] shadow-xl border border-white">
                                 <div className="flex gap-6 items-center">
                                     <button onClick={() => setView('library')} className="text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-indigo-600 transition-colors">← Vault</button>
-                                    <input className="text-3xl font-black uppercase italic tracking-tighter text-indigo-600 bg-transparent outline-none border-b-2 border-transparent focus:border-indigo-100" 
+                                    <input className="text-3xl font-black uppercase italic tracking-tighter text-indigo-600 bg-transparent outline-none" 
                                         value={activeStack.name} 
                                         onChange={(e) => {
                                             const n = e.target.value;
@@ -261,28 +277,31 @@
                                 </div>
                                 <div className="flex gap-4">
                                     <button onClick={async () => {
-                                        const { data: card } = await supabaseClient.from('cards').insert({ user_id: user.id, header: 'New Card' }).select().single();
-                                        await supabaseClient.from('stack_items').insert({ stack_id: activeStack.id, card_id: card.id, position: activeStack.card_ids.length });
-                                        setMasterLibrary({ ...masterLibrary, [card.id]: { ...card, media: [] } });
-                                        setActiveStack({ ...activeStack, card_ids: [...activeStack.card_ids, card.id] });
-                                        setFocusedCardId(card.id);
-                                    }} className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:scale-105 transition-all">+ Add Card</button>
-                                    <button onClick={enterReview} className="bg-indigo-600 text-white px-12 py-4 rounded-2xl font-black text-xs uppercase shadow-2xl hover:scale-105 transition-all tracking-widest">Start Sweep</button>
+                                        const { data: card } = await supabaseClient.from('cards').insert({ user_id: user.id, header: 'Untitled Card' }).select().single();
+                                        if (card) {
+                                            await supabaseClient.from('stack_items').insert({ stack_id: activeStack.id, card_id: card.id, position: activeStack.card_ids.length });
+                                            setMasterLibrary({ ...masterLibrary, [card.id]: { ...card, media: [] } });
+                                            setActiveStack({ ...activeStack, card_ids: [...activeStack.card_ids, card.id] });
+                                            setFocusedCardId(card.id);
+                                        }
+                                    }} className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg">+ Add Card</button>
+                                    <button onClick={enterReview} className="bg-indigo-600 text-white px-12 py-4 rounded-2xl font-black text-xs uppercase shadow-2xl tracking-widest">Start Sweep</button>
                                 </div>
                             </nav>
 
                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-6">
                                 {activeStack.card_ids.map(cid => {
                                     const card = masterLibrary[cid];
+                                    if (!card) return null;
                                     return (
                                         <div key={cid} onClick={() => setFocusedCardId(cid)} className="bg-white rounded-[2.5rem] p-5 shadow-sm border-2 border-transparent hover:border-indigo-400 cursor-pointer transition-all flex flex-col h-[340px] group">
                                             <div className="aspect-video bg-slate-900 rounded-3xl overflow-hidden mb-4 shadow-inner">
-                                                {card?.media?.[0] && <MediaViewer item={card.media[0]} className="w-full h-full object-cover opacity-80" autoPlay={false} />}
+                                                <MediaViewer item={card.media?.[0]} className="w-full h-full object-cover opacity-80" autoPlay={false} />
                                             </div>
-                                            <h4 className="font-black text-[12px] uppercase tracking-tighter mb-2 leading-none text-slate-800">{card?.header || "Untitled"}</h4>
-                                            <p className="text-[10px] text-slate-400 line-clamp-4 leading-relaxed font-medium">{card?.description || "..."}</p>
+                                            <h4 className="font-black text-[12px] uppercase tracking-tighter mb-2 leading-none text-slate-800">{card.header || "Untitled"}</h4>
+                                            <p className="text-[10px] text-slate-400 line-clamp-4 leading-relaxed font-medium">{card.description || "No notes..."}</p>
                                             <div className="mt-auto pt-4 border-t opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button onClick={(e) => { e.stopPropagation(); if(confirm('Remove from stack?')) supabaseClient.from('stack_items').delete().eq('stack_id', activeStack.id).eq('card_id', cid).then(() => openStack(activeStack)); }} className="text-[9px] font-black uppercase text-rose-300 hover:text-rose-500">Remove</button>
+                                                <button onClick={(e) => { e.stopPropagation(); if(confirm('Remove?')) supabaseClient.from('stack_items').delete().eq('stack_id', activeStack.id).eq('card_id', cid).then(() => openStack(activeStack)); }} className="text-[9px] font-black uppercase text-rose-300">Remove</button>
                                             </div>
                                         </div>
                                     )
@@ -303,26 +322,24 @@
                                     const midx = mediaIndices[cid] || 0;
                                     return (
                                         <div key={i} className="flex flex-col gap-4">
-                                            <div className="text-center font-black text-indigo-200 text-[10px] uppercase tracking-widest italic leading-none">Slot {String.fromCharCode(65+i)}</div>
-                                            <div className="rounded-[4rem] bg-white shadow-2xl p-10 h-[680px] flex flex-col relative group transition-all hover:border-indigo-100 border-2 border-transparent">
-                                                <h2 className="text-2xl font-black uppercase tracking-tighter mb-6 text-slate-800">{card.header}</h2>
+                                            <div className="text-center font-black text-indigo-200 text-[10px] uppercase tracking-widest italic">Slot {String.fromCharCode(65+i)}</div>
+                                            <div className="rounded-[4rem] bg-white shadow-2xl p-10 h-[680px] flex flex-col relative transition-all border-2 border-transparent">
+                                                <h2 className="text-2xl font-black uppercase tracking-tighter mb-6 text-slate-800 truncate">{card.header}</h2>
                                                 <div className="relative bg-black rounded-[2.5rem] overflow-hidden mb-8 aspect-video shrink-0 shadow-2xl">
                                                     <div className="w-full h-full cursor-zoom-in" onClick={() => setZoomUrl(extMedia[midx]?.url)}>
                                                         <MediaViewer item={extMedia[midx]} className="w-full h-full object-contain" />
                                                     </div>
                                                     {extMedia.length > 1 && (
-                                                        <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 flex justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-                                                            <button onClick={() => setMediaIndices(prev => ({...prev, [cid]: (midx - 1 + extMedia.length) % extMedia.length}))} className="glass text-indigo-600 w-12 h-12 rounded-full font-black shadow-xl">←</button>
-                                                            <button onClick={() => setMediaIndices(prev => ({...prev, [cid]: (midx + 1) % extMedia.length}))} className="glass text-indigo-600 w-12 h-12 rounded-full font-black shadow-xl">→</button>
+                                                        <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 flex justify-between">
+                                                            <button onClick={() => setMediaIndices(prev => ({...prev, [cid]: (midx - 1 + extMedia.length) % extMedia.length}))} className="glass text-indigo-600 w-12 h-12 rounded-full font-black">←</button>
+                                                            <button onClick={() => setMediaIndices(prev => ({...prev, [cid]: (midx + 1) % extMedia.length}))} className="glass text-indigo-600 w-12 h-12 rounded-full font-black">→</button>
                                                         </div>
                                                     )}
-                                                    <div className="absolute bottom-4 right-4 glass px-4 py-1 rounded-full text-[10px] font-black text-indigo-600">{midx + 1}/{extMedia.length}</div>
                                                 </div>
                                                 <div className="flex-1 overflow-y-auto pr-2">
                                                     <NoteRenderer text={card.description} onJump={setFocusedCardId} library={masterLibrary} />
                                                     <textarea 
-                                                        className="w-full h-40 mt-8 p-6 bg-slate-50 rounded-[2rem] text-sm font-medium outline-none border-none resize-none shadow-inner text-slate-600" 
-                                                        placeholder="Notes..."
+                                                        className="w-full h-40 mt-8 p-6 bg-slate-50 rounded-[2rem] text-sm font-medium outline-none resize-none shadow-inner" 
                                                         value={card.description || ""} 
                                                         onChange={(e) => updateCard(cid, {description: e.target.value})} 
                                                     />
@@ -330,7 +347,7 @@
                                             </div>
                                             <div className="flex justify-center gap-3">
                                                 <button disabled={i===0} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i-1]] = [r[i-1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-10 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 uppercase italic transition-all hover:bg-slate-50">← Swap</button>
-                                                <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i+1]] = [r[i+1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-10 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 uppercase italic transition-all hover:bg-slate-50">Swap →</button>
+                                                <button disabled={i===2 || !reviewRows[currentRow][i+1]} onClick={()=> {const nr = [...reviewRows]; const r = [...nr[currentRow]]; [r[i], r[i-1]] = [r[i-1], r[i]]; nr[currentRow] = r; setReviewRows(nr);}} className="bg-white px-10 py-3 rounded-2xl shadow-sm font-black text-[10px] disabled:opacity-20 uppercase italic transition-all hover:bg-slate-50">Swap →</button>
                                             </div>
                                         </div>
                                     )
@@ -339,13 +356,13 @@
 
                             <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[1500] w-full max-w-3xl px-6">
                                 <div className="glass p-3 rounded-full shadow-2xl flex items-center justify-between border-2 border-white">
-                                    <button onClick={() => setView('edit')} className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500">Abort Sweep</button>
+                                    <button onClick={() => setView('edit')} className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500">Exit</button>
                                     <div className="flex items-center gap-3">
                                         <button disabled={currentRow === 0} onClick={() => setCurrentRow(currentRow - 1)} className="bg-slate-100 text-slate-800 px-8 py-4 rounded-full font-black text-[11px] uppercase tracking-widest">Prev Set</button>
                                         <span className="text-[12px] font-black text-indigo-400 px-6 italic uppercase tracking-widest">{currentRow + 1} / {reviewRows.length}</span>
                                         {currentRow < reviewRows.length - 1 ? 
-                                            <button onClick={() => setCurrentRow(currentRow + 1)} className="bg-indigo-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase tracking-widest shadow-xl hover:bg-indigo-700">Next Set</button> :
-                                            <button onClick={completeSweep} className="bg-emerald-600 text-white px-14 py-4 rounded-full font-black text-xs uppercase italic tracking-widest shadow-xl hover:bg-emerald-700">Complete Sweep</button>
+                                            <button onClick={() => setCurrentRow(currentRow + 1)} className="bg-indigo-600 text-white px-12 py-4 rounded-full font-black text-xs uppercase tracking-widest shadow-xl">Next Set</button> :
+                                            <button onClick={completeSweep} className="bg-emerald-600 text-white px-14 py-4 rounded-full font-black text-xs uppercase italic tracking-widest shadow-xl">Complete Sweep</button>
                                         }
                                     </div>
                                     <div className="w-24"></div>
@@ -366,14 +383,14 @@
                                     <button onClick={() => setFocusedCardId(null)} className="text-slate-300 hover:text-rose-500 font-black text-5xl transition-colors">×</button>
                                 </div>
                                 <div className="flex-1 flex overflow-hidden p-12 gap-16">
-                                    <div className="w-1/3 flex flex-col gap-8 overflow-y-auto pr-4">
-                                        <div className="aspect-square bg-slate-900 rounded-[3rem] overflow-hidden shadow-2xl relative group shrink-0">
+                                    <div className="w-1/3 flex flex-col gap-8 overflow-y-auto pr-4 shrink-0">
+                                        <div className="aspect-square bg-slate-900 rounded-[3rem] overflow-hidden shadow-2xl relative group">
                                             <MediaViewer item={getExtendedMedia(focusedCardId)[0]} className="w-full h-full object-contain" />
                                         </div>
                                         <div className="grid grid-cols-2 gap-4">
-                                            {masterLibrary[focusedCardId].media?.map((m, idx) => (
-                                                <div key={m.id} className="aspect-video bg-black rounded-3xl overflow-hidden shadow-lg group relative border border-slate-100">
-                                                    <MediaViewer item={m} className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-all" autoPlay={false} />
+                                            {masterLibrary[focusedCardId].media?.map((m) => (
+                                                <div key={m.id} className="aspect-video bg-black rounded-3xl overflow-hidden shadow-lg group relative">
+                                                    <MediaViewer item={m} className="w-full h-full object-cover opacity-70 group-hover:opacity-100" autoPlay={false} />
                                                     <button onClick={async (e) => {
                                                         e.stopPropagation();
                                                         await supabaseClient.from('media').delete().eq('id', m.id);
@@ -384,13 +401,13 @@
                                                     }} className="absolute top-2 right-2 bg-rose-500 text-white w-6 h-6 rounded-full font-black text-xs opacity-0 group-hover:opacity-100 transition-opacity">×</button>
                                                 </div>
                                             ))}
-                                            <label className="aspect-video border-2 border-dashed border-slate-300 rounded-3xl flex flex-col items-center justify-center text-[10px] font-black uppercase text-slate-400 cursor-pointer hover:border-indigo-400 hover:bg-slate-50 transition-all">
+                                            <label className="aspect-video border-2 border-dashed border-slate-300 rounded-3xl flex flex-col items-center justify-center text-[10px] font-black uppercase text-slate-400 cursor-pointer hover:border-indigo-400 transition-all">
                                                 <span>+ Media</span>
                                                 <input type="file" hidden accept="image/*,video/*" onChange={async (e) => {
                                                     const file = e.target.files[0]; if(!file) return;
                                                     setSyncStatus('syncing');
                                                     const fileName = `${user.id}/${Date.now()}-${file.name}`;
-                                                    const { data, error } = await supabaseClient.storage.from('media').upload(fileName, file);
+                                                    const { data } = await supabaseClient.storage.from('media').upload(fileName, file);
                                                     if(data) {
                                                         const { data: { publicUrl } } = supabaseClient.storage.from('media').getPublicUrl(fileName);
                                                         const { data: m } = await supabaseClient.from('media').insert({ card_id: focusedCardId, url: publicUrl, type: file.type.startsWith('video') ? 'video' : 'image' }).select().single();
@@ -404,18 +421,27 @@
                                             </label>
                                         </div>
                                     </div>
-                                    <div className="flex-1 flex flex-col gap-8">
-                                        <input className="text-5xl font-black outline-none border-b-4 border-slate-50 focus:border-indigo-500 pb-6 transition-all tracking-tighter uppercase italic text-slate-800" 
+                                    <div className="flex-1 flex flex-col gap-8 overflow-hidden">
+                                        <input className="text-5xl font-black outline-none border-b-4 border-slate-50 focus:border-indigo-500 pb-6 tracking-tighter uppercase italic text-slate-800" 
                                             value={masterLibrary[focusedCardId].header || ""} 
                                             onChange={(e) => updateCard(focusedCardId, {header: e.target.value})} />
                                         <div className="flex-1 overflow-y-auto">
                                             <div className="mb-10 bg-slate-50 p-8 rounded-[3rem] shadow-inner">
                                                 <NoteRenderer text={masterLibrary[focusedCardId].description} onJump={setFocusedCardId} library={masterLibrary} />
                                             </div>
-                                            <textarea className="w-full h-96 text-slate-600 text-xl outline-none resize-none leading-relaxed font-medium placeholder:italic" 
+                                            <textarea className="w-full h-96 text-slate-600 text-xl outline-none resize-none leading-relaxed font-medium" 
                                                 placeholder="Studio notes..." 
                                                 value={masterLibrary[focusedCardId].description || ""} 
                                                 onChange={(e) => updateCard(focusedCardId, {description: e.target.value})} />
+                                        </div>
+                                    </div>
+                                    <div className="w-1/5 bg-slate-900 rounded-[3rem] p-8 flex flex-col shrink-0">
+                                        <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-6 border-b border-white/10 pb-4 italic">Quick Link</h4>
+                                        <input className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-xs font-bold text-white outline-none mb-6" placeholder="Find..." value={editorSearch} onChange={(e) => setEditorSearch(e.target.value)} />
+                                        <div className="flex-1 overflow-y-auto space-y-2">
+                                            {Object.values(masterLibrary).filter(c => c.header?.toLowerCase().includes(editorSearch.toLowerCase()) && c.id !== focusedCardId).slice(0, 15).map(c => (
+                                                <button key={c.id} onClick={() => updateCard(focusedCardId, { description: (masterLibrary[focusedCardId].description || "") + ` [[Card:${c.id}|${c.header}]]` })} className="w-full text-left bg-white/5 text-white p-3 rounded-xl text-[10px] font-black hover:bg-indigo-600 truncate transition-all">📄 {c.header}</button>
+                                            ))}
                                         </div>
                                     </div>
                                 </div>
